@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Project files
+output/
+server/uploads/
+logs/
+*.db
+*.key
+*.enc
+*.xor
+*.aes
+*.rc
+debug.keystore
+*.apk
+*.exe
+*.elf
+*.pyc
+
+# Metasploit
+*.rc
+msf_*.rc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Ngrok
+ngrok.yml
+.ngrok2/
+.ngrok/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+enhance_*.sh
+listener_*.rc
+
+# Backups
+*.bak
+*.backup
