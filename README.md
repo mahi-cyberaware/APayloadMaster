@@ -45,7 +45,7 @@ Advanced Payload Generator with Localhost & Port Forwarding Support for Kali Lin
 ```bash
 # Clone repository
 git clone https://github.com/mahi.cyberaware/APayloadMaster.git
-cd APayloadMaster
+cd apayloadmaster
 
 # Run installation script
 chmod +x install.sh
