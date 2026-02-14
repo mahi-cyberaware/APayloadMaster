@@ -4,4 +4,5 @@ requests==2.31.0
 qrcode==7.4.2
 pycryptodome==3.19.0
 cryptography==41.0.7
-pillow-simd==10.0.0
+pillow==10.1.0
+pinggy==0.1.5

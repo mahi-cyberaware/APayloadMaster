@@ -11,61 +11,50 @@
 > Unauthorised use may be illegal. You are responsible for complying with all applicable laws.
 
 ---
+Author: mahi.cyberaware
 
-## 📦 **Features**
+APayloadMaster is a professional security assessment tool that simplifies the creation, binding, and distribution of payloads for authorized penetration testing. It integrates multiple port‑forwarding services (Ngrok, Serveo, LocalXpose, Pinggy, Cloudflare) and provides a rich set of features for post‑exploitation.
 
-### 🎯 **Payload Creation**
-- **Multiple Platforms**  
-  Android APK, Windows EXE/DLL, Linux ELF, Python, PowerShell, Bash
-- **Connection Methods**  
-  - Localhost (direct)  
-  - **Ngrok** – TCP tunneling  
-  - **LocalXpose** – instant TCP/HTTP tunnels  
-  - **Pinggy** – SSH‑based public URLs  
-  - **Cloudflare Tunnel** – via `cloudflared`  
-  - **Serveo** – legacy SSH forwarding  
-  - **Custom LHOST** – manual entry  
-- **Advanced Options**  
-  - Custom output filenames  
-  - AES / XOR encryption  
-  - Python code obfuscation  
-  - UPX packing & junk‑byte insertion (AV evasion)  
-  - Persistence mechanisms (registry, crontab, .bashrc)  
-  - Auto‑permissions for Android (instructions provided)
+## 🚀 Features
 
-### 🧩 **Binding & Distribution**
-- **QR Code** generation for instant download  
-- **HTTP file server** with directory listing  
-- **Steganography** – hide payloads inside images (`steghide`)  
-- **Windows Shortcut** (`.url`) creation  
-- **Android launcher** template  
-- **Email / SMS / Social‑Media** distribution templates  
+- **Payload Generation**  
+  Android APK, Windows EXE/DLL, Linux ELF, Python, PowerShell, Bash scripts.
 
-### 🧰 **Tunnel Automation**
-- **Auto‑download** of `ngrok`, `loclx`, `cloudflared` if missing  
-- **Token prompts** for authenticated tunnels (ngrok, LocalXpose, Cloudflare)  
-- **Background tunnel management** – no separate terminal needed  
+- **Multiple Tunnels**  
+  - Localhost  
+  - Ngrok (auto‑download + token)  
+  - Serveo  
+  - LocalXpose  
+  - **Pinggy Pro** (supports persistent subdomains and TCP/HTTP/HTTPS)  
+  - Cloudflare Tunnel  
 
-### 🛠 **Listener**
-- **Metasploit multi/handler** integration  
-- **Correct payload selection** per target type (Android, Windows, Linux, etc.)  
-- Automatic `.rc` file generation & background execution  
+- **Binding & Hiding**  
+  - Bind payload with APK (requires apktool ≥2.9.2)  
+  - Embed payload in PDF/DOCX  
+  - Steganography (hide in images using steghide)  
+  - Generate QR codes for download  
+  - Create Windows shortcuts / Android launcher icons  
 
-### 📱 **Termux Support**
-- Full installation script for Termux (using `pkg`)  
-- Works without root on Android devices  
+- **Distribution**  
+  - Email, SMS, and social media templates  
+  - Start an HTTP server for file sharing  
+  - Decrypt encrypted APKs  
 
----
+- **Listener**  
+  - Automatically start Metasploit multi/handler with the correct payload  
+  - For tunnels, binds to `0.0.0.0` (so the tunnel can forward connections)  
 
-## 🚀 **Quick Start**
+- **Professional Banner & Legal Notice**  
+  Clear warnings about authorised use only.
 
-### **1. Installation**
+## 📦 Installation
 
-#### **Kali Linux**
+### On Kali Linux / Debian
+
 ```bash
-git clone https://github.com/mahi-cyberaware/APayloadMaster.git
-cd APayloadMaster
+git clone git@github.com:mahi-cyberaware/APayloadMaster.git
+cd apayloadmaster
 chmod +x install.sh
-sudo ./install.sh          # installs dependencies, tools, Python venv
+./install.sh
 source venv/bin/activate
 python3 main.py
