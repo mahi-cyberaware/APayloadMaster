@@ -61,14 +61,4 @@ python3 main.py
 or
 apayloadmaster
 
-### On Termux Installation
-```bash
-pkg install git
-git clone git@github.com:mahi-cyberaware/APayloadMaster.git
-cd apayloadmaster
-chmod +x install.sh
-./install.sh
-source venv/bin/activate
-python3 main.py
-or
-apayloadmaster
+
