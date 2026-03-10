@@ -60,8 +60,10 @@ APayloadMaster is a professional security assessment tool that simplifies the cr
 git clone https://github.com/mahi-cyberaware/APayloadMaster.git
 cd APayloadMaster
 chmod +x install.sh
-./install.sh
+./install.sh 
+python3 -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
 python3 main.py
 
 
