@@ -4,6 +4,11 @@
 [![Python](https://img.shields.io/badge/Python-3.8%2B-green)](https://python.org)
 [![Platform](https://img.shields.io/badge/Platform-Kali%20Linux%20%7C%20Termux-orange)](https://www.kali.org)
 [![Version](https://img.shields.io/badge/Version-3.1-brightgreen)]()
+![GitHub stars](https://img.shields.io/github/stars/mahi-cyberaware/APayloadMaster)
+![GitHub forks](https://img.shields.io/github/forks/mahi-cyberaware/APayloadMaster)
+![GitHub license](https://img.shields.io/github/license/mahi-cyberaware/APayloadMaster)
+# APayloadMaster
+Advanced Payload Generator for Ethical Hacking & Penetration Testing
 
 **Advanced Payload Generator** with Localhost & Port Forwarding Support for **Kali Linux** and **Termux**.
 
