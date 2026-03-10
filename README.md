@@ -57,13 +57,11 @@ APayloadMaster is a professional security assessment tool that simplifies the cr
 ### On Kali Linux / Debian
 
 ```bash
-git clone git@github.com:mahi-cyberaware/APayloadMaster.git
-cd apayloadmaster
+git clone https://github.com/mahi-cyberaware/APayloadMaster.git
+cd APayloadMaster
 chmod +x install.sh
 ./install.sh
 source venv/bin/activate
 python3 main.py
-or
-apayloadmaster
 
 
