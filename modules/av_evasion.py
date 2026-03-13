@@ -1,3 +1,5 @@
+from modules.utils import Colors
+
 import os
 import subprocess
 import random
@@ -7,6 +9,7 @@ import hashlib
 
 class AVEvasive:
     def __init__(self):
+        self.colors = Colors()
         self.output_dir = "output/evaded"
         os.makedirs(self.output_dir, exist_ok=True)
     
@@ -45,7 +48,7 @@ class AVEvasive:
             ], capture_output=True)
             
             if os.path.exists(output_path):
-                print(f"{Colors().GREEN}[+] UPX packing successful{Colors().ENDC}")
+                print(f"{self.colors.GREEN}[+] UPX packing successful{self.colors.ENDC}")
                 return output_path
         except:
             pass

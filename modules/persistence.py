@@ -1,9 +1,12 @@
+from modules.utils import Colors
+
 import os
 import base64
 import random
 
 class PersistenceManager:
     def __init__(self):
+        self.colors = Colors()
         self.output_dir = "output/persistent"
         os.makedirs(self.output_dir, exist_ok=True)
     

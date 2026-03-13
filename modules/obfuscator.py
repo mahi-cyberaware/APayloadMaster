@@ -1,3 +1,5 @@
+from modules.utils import Colors
+
 import os
 import random
 import string
@@ -8,6 +10,7 @@ import re
 
 class Obfuscator:
     def __init__(self):
+        self.colors = Colors()
         self.output_dir = "output/obfuscated"
         os.makedirs(self.output_dir, exist_ok=True)
     

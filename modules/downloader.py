@@ -1,3 +1,5 @@
+from modules.utils import Colors
+
 import os
 import http.server
 import socketserver
@@ -18,6 +20,7 @@ class DownloadHandler:
     def __init__(self, db):
         self.db = db
         self.servers = {}
+        self.colors = Colors()
     
     def save_locally(self, filepath, save_dir="./downloads"):
         """Save file locally"""
@@ -29,7 +32,7 @@ class DownloadHandler:
         try:
             import shutil
             shutil.copy2(filepath, dest_path)
-            print(f"{Colors().GREEN}[+] File saved to: {dest_path}{Colors().ENDC}")
+            print(f"{self.colors.GREEN}[+] File saved to: {dest_path}{self.colors.ENDC}")
             
             # Log to database
             self.db.add_download(0, {
@@ -40,7 +43,7 @@ class DownloadHandler:
             
             return dest_path
         except Exception as e:
-            print(f"{Colors().RED}[!] Error saving file: {e}{Colors().ENDC}")
+            print(f"{self.colors.RED}[!] Error saving file: {e}{self.colors.ENDC}")
             return None
     
     def upload_to_server(self, filepath, server_url, api_key=None):
@@ -66,19 +69,19 @@ class DownloadHandler:
                 result = response.json()
                 download_url = result.get('download_url')
                 
-                print(f"{Colors().GREEN}[+] File uploaded successfully{Colors().ENDC}")
-                print(f"{Colors().CYAN}[*] Download URL: {download_url}{Colors().ENDC}")
+                print(f"{self.colors.GREEN}[+] File uploaded successfully{self.colors.ENDC}")
+                print(f"{self.colors.CYAN}[*] Download URL: {download_url}{self.colors.ENDC}")
                 
                 # Generate QR code for URL
                 self.generate_qr_code(download_url)
                 
                 return download_url
             else:
-                print(f"{Colors().RED}[!] Upload failed: {response.text}{Colors().ENDC}")
+                print(f"{self.colors.RED}[!] Upload failed: {response.text}{self.colors.ENDC}")
                 return None
                 
         except Exception as e:
-            print(f"{Colors().RED}[!] Upload error: {e}{Colors().ENDC}")
+            print(f"{self.colors.RED}[!] Upload error: {e}{self.colors.ENDC}")
             return None
     
     def start_local_server(self, filepath, port=8080):
@@ -180,11 +183,11 @@ class DownloadHandler:
                         'ip_address': client_ip,
                         'user_agent': user_agent
                     })
-                    print(f"{Colors().CYAN}[*] Download: {client_ip} - {user_agent}{Colors().ENDC}")
+                    print(f"{self.colors.CYAN}[*] Download: {client_ip} - {user_agent}{self.colors.ENDC}")
         
-        print(f"{Colors().GREEN}[*] Starting server on port {port}{Colors().ENDC}")
-        print(f"{Colors().CYAN}[*] Download URL: http://localhost:{port}/{filename}{Colors().ENDC}")
-        print(f"{Colors().CYAN}[*] QR Code URL: http://localhost:{port}/qr{Colors().ENDC}")
+        print(f"{self.colors.GREEN}[*] Starting server on port {port}{self.colors.ENDC}")
+        print(f"{self.colors.CYAN}[*] Download URL: http://localhost:{port}/{filename}{self.colors.ENDC}")
+        print(f"{self.colors.CYAN}[*] QR Code URL: http://localhost:{port}/qr{self.colors.ENDC}")
         
         os.chdir(os.path.dirname(filepath) or '.')
         
@@ -193,7 +196,7 @@ class DownloadHandler:
             try:
                 httpd.serve_forever()
             except KeyboardInterrupt:
-                print(f"\n{Colors().YELLOW}[*] Server stopped{Colors().ENDC}")
+                print(f"\n{self.colors.YELLOW}[*] Server stopped{self.colors.ENDC}")
     
     def start_web_server(self, port=8000):
         """Start full-featured web server"""
@@ -309,16 +312,16 @@ class DownloadHandler:
                     self.send_response(404)
                     self.end_headers()
         
-        print(f"{Colors().GREEN}[*] Starting web server on port {port}{Colors().ENDC}")
-        print(f"{Colors().CYAN}[*] URL: http://localhost:{port}{Colors().ENDC}")
-        print(f"{Colors().CYAN}[*] Upload: http://localhost:{port}/upload{Colors().ENDC}")
+        print(f"{self.colors.GREEN}[*] Starting web server on port {port}{self.colors.ENDC}")
+        print(f"{self.colors.CYAN}[*] URL: http://localhost:{port}{self.colors.ENDC}")
+        print(f"{self.colors.CYAN}[*] Upload: http://localhost:{port}/upload{self.colors.ENDC}")
         
         with socketserver.TCPServer(("", int(port)), WebHandler) as httpd:
             self.servers[port] = httpd
             try:
                 httpd.serve_forever()
             except KeyboardInterrupt:
-                print(f"\n{Colors().YELLOW}[*] Server stopped{Colors().ENDC}")
+                print(f"\n{self.colors.YELLOW}[*] Server stopped{self.colors.ENDC}")
     
     def generate_qr_code(self, url):
         """Generate QR code for download URL"""
@@ -337,10 +340,10 @@ class DownloadHandler:
             qr_path = "download_qr.png"
             img.save(qr_path)
             
-            print(f"{Colors().GREEN}[+] QR code saved: {qr_path}{Colors().ENDC}")
+            print(f"{self.colors.GREEN}[+] QR code saved: {qr_path}{self.colors.ENDC}")
             return qr_path
         except Exception as e:
-            print(f"{Colors().RED}[!] QR generation error: {e}{Colors().ENDC}")
+            print(f"{self.colors.RED}[!] QR generation error: {e}{self.colors.ENDC}")
             return None
     
     def email_distribution(self, filepath, email_list, subject):
@@ -375,11 +378,11 @@ class DownloadHandler:
             msg.attach(attachment)
             
             # Send email (configure SMTP settings)
-            print(f"{Colors().YELLOW}[*] Email configuration needed{Colors().ENDC}")
-            print(f"{Colors().CYAN}[*] Would send to: {email_list}{Colors().ENDC}")
+            print(f"{self.colors.YELLOW}[*] Email configuration needed{self.colors.ENDC}")
+            print(f"{self.colors.CYAN}[*] Would send to: {email_list}{self.colors.ENDC}")
             
             return True
             
         except Exception as e:
-            print(f"{Colors().RED}[!] Email error: {e}{Colors().ENDC}")
+            print(f"{self.colors.RED}[!] Email error: {e}{self.colors.ENDC}")
             return False
