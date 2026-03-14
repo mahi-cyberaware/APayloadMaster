@@ -66,4 +66,20 @@ source venv/bin/activate
 pip install -r requirements.txt
 python3 main.py
 
+```
 
+---
+
+<p align="center">
+
+<img src="https://img.shields.io/badge/Made%20with-Love-red?style=for-the-badge">
+
+<br><br>
+
+Developed by <b>mahi.cyberaware</b>
+
+<br>
+
+⭐ Star this repository if it helped you!
+
+</p>
