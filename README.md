@@ -20,6 +20,34 @@ Author: mahi.cyberaware
 
 APayloadMaster is a professional security assessment tool that simplifies the creation, binding, and distribution of payloads for authorized penetration testing. It integrates multiple port‑forwarding services (Ngrok, Serveo, LocalXpose, Pinggy, Cloudflare) and provides a rich set of features for post‑exploitation.
 
+---
+
+## 📸 Preview
+
+<p align="center">
+
+<img src="assets/Tool_Banner.png" width="800">
+
+</p>
+
+<p align="center">
+
+<img src="assets/Tool_Banner2.png" width="800">
+
+</p>
+
+---
+
+## 🎬 Demo
+
+<p align="center">
+
+<img src="assets/demo.gif" width="800">
+
+</p>
+
+---
+
 ## 🚀 Features
 
 - **Payload Generation**  
