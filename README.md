@@ -6,7 +6,7 @@
 [![Version](https://img.shields.io/badge/Version-3.1-brightgreen)]()
 ![GitHub stars](https://img.shields.io/github/stars/mahi-cyberaware/APayloadMaster)
 ![GitHub forks](https://img.shields.io/github/forks/mahi-cyberaware/APayloadMaster)
-![GitHub license](https://img.shields.io/github/license/mahi-cyberaware/APayloadMaster)
+![GitHub license](https://img.shields.io/github/license/mahi-cyberaware/APayloadMaster?style=for-the-badge)
 # APayloadMaster
 Advanced Payload Generator for Ethical Hacking & Penetration Testing
 
